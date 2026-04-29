@@ -1,0 +1,128 @@
+#root {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 1rem;
+}
+
+.app-shell {
+  display: grid;
+  gap: 1rem;
+}
+
+h1,
+h2,
+p {
+  margin: 0;
+}
+
+header {
+  display: grid;
+  gap: 0.35rem;
+}
+
+header p {
+  color: #d1d9e7;
+}
+
+.controls-grid {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  background: #111723;
+  border: 1px solid #2a3448;
+  border-radius: 12px;
+  padding: 0.75rem;
+}
+
+label {
+  display: grid;
+  gap: 0.35rem;
+  font-size: 0.9rem;
+}
+
+input {
+  width: 100%;
+}
+
+.pin-panel,
+.panel {
+  display: grid;
+  gap: 0.45rem;
+  background: #111723;
+  border: 1px solid #2a3448;
+  border-radius: 12px;
+  padding: 0.75rem;
+}
+
+.earth-map {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 2 / 1;
+  border: 1px solid #3c4b66;
+  border-radius: 10px;
+  cursor: crosshair;
+  background-color: #12243f;
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+
+.earth-pin {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  transform: translate(-50%, -50%);
+  border: 2px solid #ffffff;
+  background: #ff6363;
+  box-shadow: 0 0 0 2px #00000066;
+}
+
+.view-toggle {
+  display: flex;
+  gap: 0.6rem;
+}
+
+.view-toggle button {
+  border: 1px solid #37507d;
+  background: #182238;
+  color: #deebff;
+}
+
+.view-toggle button.active {
+  border-color: #8eb6ff;
+  background: #1e3158;
+}
+
+.sky-canvas {
+  width: 100%;
+  height: 420px;
+  border-radius: 10px;
+  border: 1px solid #2f3e5a;
+}
+
+.readout {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  font-size: 0.95rem;
+  color: #d5e4ff;
+}
+
+.orbit-canvas-wrap {
+  width: 100%;
+  height: 520px;
+  border: 1px solid #2f3e5a;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+@media (max-width: 700px) {
+  .orbit-canvas-wrap {
+    height: 420px;
+  }
+
+  .sky-canvas {
+    height: 340px;
+  }
+}
