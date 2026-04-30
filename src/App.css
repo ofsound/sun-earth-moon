@@ -62,8 +62,7 @@ p {
   align-content: start;
 }
 
-.controls-grid label:nth-child(4),
-.controls-grid label:nth-child(7) {
+.controls-grid label:nth-child(4) {
   grid-column: span 2;
 }
 
@@ -155,10 +154,25 @@ input {
   font-size: 1rem;
 }
 
+.pin-zone-id {
+  margin: 0;
+  font-size: 0.75rem;
+  color: #9fb4d9;
+  font-family: ui-monospace, monospace;
+}
+
+.pin-panel-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
 .earth-map {
   position: relative;
   width: 100%;
   aspect-ratio: 2 / 1;
+  overflow: hidden;
   border: 1px solid #3c4b66;
   border-radius: 10px;
   cursor: crosshair;
@@ -168,8 +182,19 @@ input {
   background-repeat: no-repeat;
 }
 
+.earth-day-night-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  pointer-events: none;
+}
+
 .earth-pin {
   position: absolute;
+  z-index: 2;
   width: 12px;
   height: 12px;
   border-radius: 999px;
@@ -177,6 +202,11 @@ input {
   border: 2px solid #ffffff;
   background: #ff6363;
   box-shadow: 0 0 0 2px #00000066;
+}
+
+.day-night-caption {
+  color: #aebbd0;
+  font-size: 0.78rem;
 }
 
 .view-toggle {
@@ -216,6 +246,22 @@ input {
   color: #d5e4ff;
 }
 
+.readout-sky-footer {
+  align-items: flex-end;
+}
+
+.readout-facing {
+  flex: 1 1 16rem;
+  min-width: min(100%, 14rem);
+  max-width: 28rem;
+  font-size: 0.82rem;
+  color: #d5e4ff;
+}
+
+.readout-facing input[type="range"] {
+  margin-top: 0.2rem;
+}
+
 .orbit-canvas-wrap {
   width: 100%;
   height: 100%;
@@ -225,8 +271,7 @@ input {
 .orbit-stage {
   position: relative;
   min-height: calc(100vh - 5.5rem);
-  background:
-    radial-gradient(circle at 50% 50%, #15233f 0%, #060a13 42%, #010309 100%);
+  background: radial-gradient(circle at 50% 50%, #15233f 0%, #060a13 42%, #010309 100%);
 }
 
 @media (max-width: 700px) {
