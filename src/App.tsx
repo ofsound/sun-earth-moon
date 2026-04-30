@@ -50,8 +50,7 @@ const toLocalSolarTimeLabel = (minutesUtc: number, longitude: number) => {
   return `${toClockLabel(localMinutes)} local solar time${suffix}`;
 };
 
-const localSolarMidnightUtc = (year: number, month: number, day: number, longitude: number) =>
-  new Date(Date.UTC(year, month - 1, day, 0, 0, 0, 0) - longitude * 4 * msPerMinute);
+const localSolarMidnightUtc = (year: number, month: number, day: number, longitude: number) => new Date(Date.UTC(year, month - 1, day, 0, 0, 0, 0) - longitude * 4 * msPerMinute);
 
 const toDateFromUtcParts = (year: number, month: number, day: number, minutes: number) => {
   const hours = Math.floor(minutes / 60);
@@ -181,24 +180,7 @@ const toSceneVector = (vector: Vec3) => new Vector3(vector.x, vector.z, vector.y
 const normalizeDegrees = (degrees: number) => ((degrees % 360) + 360) % 360;
 
 const toCompassDirection = (degrees: number) => {
-  const directions = [
-    "North",
-    "North-northeast",
-    "Northeast",
-    "East-northeast",
-    "East",
-    "East-southeast",
-    "Southeast",
-    "South-southeast",
-    "South",
-    "South-southwest",
-    "Southwest",
-    "West-southwest",
-    "West",
-    "West-northwest",
-    "Northwest",
-    "North-northwest",
-  ];
+  const directions = ["North", "North-northeast", "Northeast", "East-northeast", "East", "East-southeast", "Southeast", "South-southeast", "South", "South-southwest", "Southwest", "West-southwest", "West", "West-northwest", "Northwest", "North-northwest"];
   const index = Math.round(normalizeDegrees(degrees) / 22.5) % directions.length;
   return directions[index];
 };
@@ -213,8 +195,7 @@ function CameraRig({moonPosition}: {moonPosition: Vector3}) {
   useEffect(() => {
     const moonDirection = moonPosition.clone().normalize();
     const horizontalDirection = new Vector3(moonDirection.x, 0, moonDirection.z);
-    const cameraDirection =
-      horizontalDirection.lengthSq() > 0.0001 ? new Vector3(-horizontalDirection.z, 0, horizontalDirection.x).normalize() : new Vector3(0, 0, 1);
+    const cameraDirection = horizontalDirection.lengthSq() > 0.0001 ? new Vector3(-horizontalDirection.z, 0, horizontalDirection.x).normalize() : new Vector3(0, 0, 1);
 
     const cameraPosition = cameraDirection.multiplyScalar(7.2);
     camera.position.set(cameraPosition.x, 2.35 + moonDirection.y * 0.45, cameraPosition.z);
@@ -310,21 +291,7 @@ function SunLighting({sunDirection}: {sunDirection: Vector3}) {
   );
 }
 
-function SkyPathChart({
-  sunPath,
-  moonPath,
-  sunContextPath,
-  moonContextPath,
-  sunNow,
-  moonNow,
-}: {
-  sunPath: SkyPoint[];
-  moonPath: SkyPoint[];
-  sunContextPath: SkyPoint[];
-  moonContextPath: SkyPoint[];
-  sunNow: SkyPoint;
-  moonNow: SkyPoint;
-}) {
+function SkyPathChart({sunPath, moonPath, sunContextPath, moonContextPath, sunNow, moonNow}: {sunPath: SkyPoint[]; moonPath: SkyPoint[]; sunContextPath: SkyPoint[]; moonContextPath: SkyPoint[]; sunNow: SkyPoint; moonNow: SkyPoint}) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
@@ -411,7 +378,6 @@ function SkyPathChart({
 
         context.lineTo(x, y);
       });
-
     };
 
     const drawBelowHorizonPath = (rawPoints: SkyPoint[], color: string) => {
@@ -478,17 +444,17 @@ function SkyPathChart({
     drawHorizonCrossings(sunPath, "#f5bf42", ["sunrise", "sunset"]);
     drawHorizonCrossings(moonPath, "#7cc3ff", ["moonrise", "moonset"]);
 
-    const drawNowMarker = (point: SkyPoint, color: string) => {
+    const drawNowMarker = (point: SkyPoint, color: string, radius: number) => {
       const x = xFromAz(point.relativeAzimuth);
       const y = yFromAlt(point.altitude);
       context.fillStyle = color;
       context.beginPath();
-      context.arc(x, y, 5, 0, Math.PI * 2);
+      context.arc(x, y, radius, 0, Math.PI * 2);
       context.fill();
     };
 
-    drawNowMarker(sunNow, "#ffd15e");
-    drawNowMarker(moonNow, "#8bc9ff");
+    drawNowMarker(sunNow, "#ffd15e", 20);
+    drawNowMarker(moonNow, "#8bc9ff", 10);
   }, [sunPath, moonPath, sunContextPath, moonContextPath, sunNow, moonNow]);
 
   return <canvas className="sky-canvas" ref={canvasRef} />;
@@ -590,14 +556,13 @@ function App() {
     const subsolarLatitude = sunEquator.dec;
     const longitudeRadians = subsolarLongitude * DEG2RAD;
     const latitudeRadians = subsolarLatitude * DEG2RAD;
-    const subsolarLocal = new Vector3(
-      Math.cos(latitudeRadians) * Math.cos(longitudeRadians),
-      Math.sin(latitudeRadians),
-      -Math.cos(latitudeRadians) * Math.sin(longitudeRadians),
-    ).normalize();
+    const subsolarLocal = new Vector3(Math.cos(latitudeRadians) * Math.cos(longitudeRadians), Math.sin(latitudeRadians), -Math.cos(latitudeRadians) * Math.sin(longitudeRadians)).normalize();
     const localNorth = new Vector3(-Math.sin(latitudeRadians) * Math.cos(longitudeRadians), Math.cos(latitudeRadians), Math.sin(latitudeRadians) * Math.sin(longitudeRadians)).normalize();
     const localEast = new Vector3(-Math.sin(longitudeRadians), 0, -Math.cos(longitudeRadians)).normalize();
-    const targetNorth = sceneNorth.clone().sub(sunDirection.clone().multiplyScalar(sceneNorth.dot(sunDirection))).normalize();
+    const targetNorth = sceneNorth
+      .clone()
+      .sub(sunDirection.clone().multiplyScalar(sceneNorth.dot(sunDirection)))
+      .normalize();
     const targetEast = targetNorth.clone().cross(sunDirection).normalize();
     const localBasis = new Matrix4().makeBasis(localEast, localNorth, subsolarLocal);
     const targetBasis = new Matrix4().makeBasis(targetEast, targetNorth, sunDirection);
@@ -750,14 +715,7 @@ function App() {
           <section className="panel">
             <h2>Observer sky view</h2>
             <p>Human observer view: center is the direction you face; left/right show relative azimuth. The white line is the horizon. Solid arcs are rise-to-set paths; faint dashed arcs are below ground.</p>
-            <SkyPathChart
-              sunPath={dayTracks.sunPath}
-              moonPath={dayTracks.moonPath}
-              sunContextPath={dayTracks.sunContextPath}
-              moonContextPath={dayTracks.moonContextPath}
-              sunNow={currentSky.sunNow}
-              moonNow={currentSky.moonNow}
-            />
+            <SkyPathChart sunPath={dayTracks.sunPath} moonPath={dayTracks.moonPath} sunContextPath={dayTracks.sunContextPath} moonContextPath={dayTracks.moonContextPath} sunNow={currentSky.sunNow} moonNow={currentSky.moonNow} />
             <div className="readout">
               <span>
                 Sun: az {currentSky.sunNow.azimuth.toFixed(1)}°, alt {currentSky.sunNow.altitude.toFixed(1)}°
