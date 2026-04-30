@@ -158,32 +158,6 @@ const skyPointAtTime = (body: Body, observer: Observer, timeMs: number, facingDe
   };
 };
 
-const withHorizonCrossings = (points: SkyPoint[]) => {
-  const result: SkyPoint[] = [];
-
-  points.forEach((point, index) => {
-    const previous = points[index - 1];
-
-    if (previous && Math.abs(point.relativeAzimuth - previous.relativeAzimuth) <= 180 && previous.altitude !== point.altitude) {
-      const crossesHorizon = (previous.altitude < 0 && point.altitude > 0) || (previous.altitude > 0 && point.altitude < 0);
-
-      if (crossesHorizon) {
-        const fractionToHorizon = previous.altitude / (previous.altitude - point.altitude);
-        result.push({
-          azimuth: normalizeDegrees(interpolateWrappedDegrees(previous.azimuth, point.azimuth, fractionToHorizon)),
-          altitude: 0,
-          relativeAzimuth: previous.relativeAzimuth + (point.relativeAzimuth - previous.relativeAzimuth) * fractionToHorizon,
-          timeMs: previous.timeMs !== undefined && point.timeMs !== undefined ? previous.timeMs + (point.timeMs - previous.timeMs) * fractionToHorizon : undefined,
-        });
-      }
-    }
-
-    result.push(point);
-  });
-
-  return result;
-};
-
 const buildSampledSkyPath = (body: Body, observer: Observer, startMs: number, endMs: number, facingDegrees: number) => {
   const points: SkyPoint[] = [];
 
@@ -622,89 +596,87 @@ function SkyPathChart({
     context.stroke();
 
     const buildContinuousCurve = (rawPoints: SkyPoint[]) => {
-      const binSize = 2;
-      const binCount = Math.round(360 / binSize);
-      const bins = new Map<number, {relativeAzimuth: number; altitudeSum: number; count: number}>();
+      if (rawPoints.length < 2) return null;
 
-      withHorizonCrossings(rawPoints).forEach((point) => {
-        const binIndex = Math.round(normalizeDegrees(point.relativeAzimuth) / binSize) % binCount;
-        const existingBin = bins.get(binIndex);
+      const altitudes = rawPoints.map((point) => point.altitude);
+      const minAltitude = Math.min(...altitudes);
+      const maxAltitude = Math.max(...altitudes);
+      const centerAltitude = (minAltitude + maxAltitude) / 2;
+      const amplitude = Math.max(8, (maxAltitude - minAltitude) / 2);
+      const averageAltitude = altitudes.reduce((total, altitude) => total + altitude, 0) / rawPoints.length;
+      const phaseVector = rawPoints.reduce(
+        (total, point) => {
+          const angle = normalizeDegrees(point.relativeAzimuth) * DEG2RAD;
+          const altitudeWeight = point.altitude - averageAltitude;
 
-        if (existingBin) {
-          existingBin.altitudeSum += point.altitude;
-          existingBin.count += 1;
-          return;
-        }
-
-        bins.set(binIndex, {
-          relativeAzimuth: binIndex * binSize,
-          altitudeSum: point.altitude,
-          count: 1,
-        });
-      });
-
-      const basePoints = [...bins.values()]
-        .map((point) => ({
-          relativeAzimuth: point.relativeAzimuth,
-          altitude: point.altitudeSum / point.count,
-        }))
-        .sort((a, b) => a.relativeAzimuth - b.relativeAzimuth);
-
-      if (basePoints.length < 2) return [];
-
-      const wrappedPoints = [
-        ...basePoints,
-        {
-          ...basePoints[0],
-          relativeAzimuth: basePoints[0].relativeAzimuth + 360,
+          return {
+            x: total.x + altitudeWeight * Math.cos(angle),
+            y: total.y + altitudeWeight * Math.sin(angle),
+          };
         },
-      ];
+        {x: 0, y: 0},
+      );
+      const highestPoint = rawPoints.reduce((highest, point) => (point.altitude > highest.altitude ? point : highest), rawPoints[0]);
+      const phase = Math.hypot(phaseVector.x, phaseVector.y) > 1e-6 ? Math.atan2(phaseVector.y, phaseVector.x) : normalizeDegrees(highestPoint.relativeAzimuth) * DEG2RAD;
 
       const altitudeAtSkyDegree = (skyDegrees: number) => {
-        const normalizedDegrees = normalizeDegrees(skyDegrees);
-        const targetDegrees = normalizedDegrees < basePoints[0].relativeAzimuth ? normalizedDegrees + 360 : normalizedDegrees;
-        const upperIndex = wrappedPoints.findIndex((point) => point.relativeAzimuth >= targetDegrees);
-
-        if (upperIndex <= 0) return wrappedPoints[0].altitude;
-
-        const previous = wrappedPoints[upperIndex - 1];
-        const next = wrappedPoints[upperIndex];
-        const fraction = (targetDegrees - previous.relativeAzimuth) / Math.max(1e-6, next.relativeAzimuth - previous.relativeAzimuth);
-        return previous.altitude + (next.altitude - previous.altitude) * fraction;
+        const angle = normalizeDegrees(skyDegrees) * DEG2RAD;
+        return centerAltitude + amplitude * Math.cos(angle - phase);
       };
 
+      const yAtSkyDegree = (skyDegrees: number) => yFromAlt(altitudeAtSkyDegree(skyDegrees));
+
+      const horizonSkyDegrees: number[] = [];
+      const horizonSamples = 720;
+      let previousDegree = 0;
+      let previousAltitude = altitudeAtSkyDegree(previousDegree);
+
+      for (let index = 1; index <= horizonSamples; index += 1) {
+        const currentDegree = (index / horizonSamples) * 360;
+        const currentAltitude = altitudeAtSkyDegree(currentDegree);
+
+        if (previousAltitude === 0 || previousAltitude * currentAltitude < 0) {
+          const fraction = previousAltitude / (previousAltitude - currentAltitude);
+          horizonSkyDegrees.push(previousDegree + (currentDegree - previousDegree) * fraction);
+        }
+
+        previousDegree = currentDegree;
+        previousAltitude = currentAltitude;
+      }
+
       const sampleCount = Math.max(360, Math.round(panoramaWidth / 2));
-      return Array.from({length: sampleCount + 1}, (_, index) => {
+      const points = Array.from({length: sampleCount + 1}, (_, index) => {
         const x = (index / sampleCount) * panoramaWidth;
         const skyDegrees = (x / width) * 360 - 360;
 
         return {
           x,
-          y: yFromAlt(altitudeAtSkyDegree(skyDegrees)),
+          y: yAtSkyDegree(skyDegrees),
         };
       });
+
+      return {points, yAtSkyDegree, horizonSkyDegrees};
     };
 
-    const traceContinuousCurve = (curve: Array<{x: number; y: number}>) => {
-      if (curve.length === 0) return;
+    const traceContinuousCurve = (curve: NonNullable<ReturnType<typeof buildContinuousCurve>>) => {
+      if (curve.points.length === 0) return;
 
       context.beginPath();
-      context.moveTo(curve[0].x, curve[0].y);
+      context.moveTo(curve.points[0].x, curve.points[0].y);
 
-      for (let index = 1; index < curve.length - 1; index += 1) {
-        const point = curve[index];
-        const next = curve[index + 1];
+      for (let index = 1; index < curve.points.length - 1; index += 1) {
+        const point = curve.points[index];
+        const next = curve.points[index + 1];
         const endX = (point.x + next.x) / 2;
         const endY = (point.y + next.y) / 2;
         context.quadraticCurveTo(point.x, point.y, endX, endY);
       }
 
-      const lastPoint = curve[curve.length - 1];
+      const lastPoint = curve.points[curve.points.length - 1];
       context.lineTo(lastPoint.x, lastPoint.y);
     };
 
-    const drawBelowHorizonPath = (rawPoints: SkyPoint[], color: string) => {
-      const curve = buildContinuousCurve(rawPoints);
+    const drawBelowHorizonPath = (curve: NonNullable<ReturnType<typeof buildContinuousCurve>>, color: string) => {
       context.save();
       context.beginPath();
       context.rect(0, horizonY, panoramaWidth, height - horizonY);
@@ -718,8 +690,7 @@ function SkyPathChart({
       context.restore();
     };
 
-    const drawVisiblePath = (rawPoints: SkyPoint[], color: string) => {
-      const curve = buildContinuousCurve(rawPoints);
+    const drawVisiblePath = (curve: NonNullable<ReturnType<typeof buildContinuousCurve>>, color: string) => {
       context.save();
       context.beginPath();
       context.rect(0, 0, panoramaWidth, horizonY);
@@ -733,7 +704,7 @@ function SkyPathChart({
       context.restore();
     };
 
-    const getHorizonCrossings = (points: SkyPoint[], color: string, labels: HorizonEventLabel) => {
+    const getHorizonCrossings = (points: SkyPoint[], curve: NonNullable<ReturnType<typeof buildContinuousCurve>>, color: string, labels: HorizonEventLabel) => {
       const baseCrossings: Array<Omit<HorizonCrossing, "x" | "y"> & {relativeAzimuth: number}> = [];
       const usedCrossingKeys = new Set<string>();
 
@@ -751,6 +722,20 @@ function SkyPathChart({
           timeMs: crossingTimeMs,
           isRise,
         });
+      };
+
+      const circularDistance = (a: number, b: number) => Math.abs(normalizeSignedDegrees(a - b));
+
+      const nearestBaseCrossing = (relativeAzimuth: number, usedIndexes: Set<number>) => {
+        const candidates = baseCrossings
+          .map((crossing, index) => ({crossing, index, distance: circularDistance(relativeAzimuth, crossing.relativeAzimuth)}))
+          .filter(({index}) => !usedIndexes.has(index))
+          .sort((a, b) => a.distance - b.distance);
+
+        const selected = candidates[0] ?? baseCrossings.map((crossing, index) => ({crossing, index, distance: circularDistance(relativeAzimuth, crossing.relativeAzimuth)})).sort((a, b) => a.distance - b.distance)[0];
+        if (selected) usedIndexes.add(selected.index);
+
+        return selected?.crossing ?? null;
       };
 
       for (let index = 1; index < points.length; index += 1) {
@@ -782,7 +767,23 @@ function SkyPathChart({
         pushCrossing(relativeAzimuth, crossingTimeMs, previous.altitude < current.altitude);
       }
 
-      return baseCrossings.flatMap((crossing) =>
+      const usedBaseCrossingIndexes = new Set<number>();
+      const visualCrossings = curve.horizonSkyDegrees.map((skyDegrees, index) => {
+        const relativeAzimuth = normalizeSignedDegrees(skyDegrees);
+        const baseCrossing = nearestBaseCrossing(relativeAzimuth, usedBaseCrossingIndexes);
+        const fallbackIsRise = index % 2 === 0;
+
+        return {
+          relativeAzimuth,
+          color,
+          label: baseCrossing?.label ?? (fallbackIsRise ? labels.rise : labels.set),
+          labelY: horizonY + ((baseCrossing?.isRise ?? fallbackIsRise) ? -10 : 20),
+          timeMs: baseCrossing?.timeMs ?? null,
+          isRise: baseCrossing?.isRise ?? fallbackIsRise,
+        };
+      });
+
+      return visualCrossings.flatMap((crossing) =>
         panoramaOffsets.flatMap((degreeOffset) => {
           const x = xFromSkyDegrees(crossing.relativeAzimuth + degreeOffset);
           if (x < -40 || x > panoramaWidth + 40) return [];
@@ -802,12 +803,16 @@ function SkyPathChart({
       );
     };
 
-    drawBelowHorizonPath(sunPath, "#f5bf42");
-    drawBelowHorizonPath(moonPath, "#7cc3ff");
-    drawVisiblePath(sunPath, "#f5bf42");
-    drawVisiblePath(moonPath, "#7cc3ff");
+    const sunCurve = buildContinuousCurve(sunPath);
+    const moonCurve = buildContinuousCurve(moonPath);
+    if (!sunCurve || !moonCurve) return;
 
-    const crossings = [...getHorizonCrossings(sunPath, "#f5bf42", {...sunLabels}), ...getHorizonCrossings(moonPath, "#7cc3ff", {...moonLabels})];
+    drawBelowHorizonPath(sunCurve, "#f5bf42");
+    drawBelowHorizonPath(moonCurve, "#7cc3ff");
+    drawVisiblePath(sunCurve, "#f5bf42");
+    drawVisiblePath(moonCurve, "#7cc3ff");
+
+    const crossings = [...getHorizonCrossings(sunPath, sunCurve, "#f5bf42", {...sunLabels}), ...getHorizonCrossings(moonPath, moonCurve, "#7cc3ff", {...moonLabels})];
     crossings.forEach(({x, y, color}) => {
       context.strokeStyle = color;
       context.lineWidth = 2;
@@ -816,20 +821,20 @@ function SkyPathChart({
       context.stroke();
     });
 
-    const drawNowMarker = (point: SkyPoint, color: string, radius: number) => {
-      const y = yFromAlt(point.altitude);
+    const drawNowMarker = (point: SkyPoint, curve: NonNullable<ReturnType<typeof buildContinuousCurve>>, color: string, radius: number) => {
       context.fillStyle = color;
       panoramaOffsets.forEach((degreeOffset) => {
-        const x = xFromSkyDegrees(point.relativeAzimuth + degreeOffset);
+        const skyDegrees = point.relativeAzimuth + degreeOffset;
+        const x = xFromSkyDegrees(skyDegrees);
         if (x < -radius || x > panoramaWidth + radius) return;
         context.beginPath();
-        context.arc(x, y, radius, 0, Math.PI * 2);
+        context.arc(x, curve.yAtSkyDegree(skyDegrees), radius, 0, Math.PI * 2);
         context.fill();
       });
     };
 
-    drawNowMarker(sunNow, "#ffd15e", 20);
-    drawNowMarker(moonNow, "#8bc9ff", 10);
+    drawNowMarker(sunNow, sunCurve, "#ffd15e", 20);
+    drawNowMarker(moonNow, moonCurve, "#8bc9ff", 10);
 
     const scene = {canvas: sceneCanvas, crossings, width, height};
     staticSceneRef.current = scene;
