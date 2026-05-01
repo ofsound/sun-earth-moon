@@ -1,0 +1,12 @@
+---
+description: Simulation state, astronomy APIs, and compass/device guardrails
+globs: src/App.tsx,src/lib/**/*
+alwaysApply: false
+---
+
+# App state and physics
+
+- **State model:** Simulation time, observer lat/lon, facing azimuth, and view mode are **local React state** in [src/App.tsx](src/App.tsx). Do not introduce global singletons or persistence layers unless the product asks for them.
+- **Astronomy:** Use **astronomy-engine** consistently (`Observer`, `Body`, `Horizon`, `SearchRiseSet`, `MoonPhase`, `Illumination`, `GeoVector`, etc.). Keep horizon/path math aligned with existing helpers (`bodyHorizontal`, `buildDisplayPath`, rise/set collection).
+- **Civil time and zones:** Local zone comes from **tz-lookup** via `observingTimeZone`. When editing date/time controls, preserve civic helpers (`civicInstantMillis`, `civicSetMonthOrDayMillis`, `civicEventTimeLabel`) so Luxon zoned math stays consistent with the simulation instant.
+- **Compass / device APIs:** `useDeviceHeading` registers `deviceorientation` listeners and must **clean up** on unmount and when stopping. iOS compass needs **secure context**; local dev uses **`npm run dev:https`** per in-app messaging.

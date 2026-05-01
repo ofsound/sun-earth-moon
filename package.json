@@ -8,6 +8,7 @@
     "dev:https": "vite --host 0.0.0.0 --mode https",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
+    "verify": "npm run lint && npm run build",
     "preview": "npm run build && wrangler dev",
     "deploy": "npm run build && wrangler deploy"
   },

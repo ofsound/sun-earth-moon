@@ -1,0 +1,12 @@
+---
+description: Run lint and production build after code edits; fix issues before finishing
+alwaysApply: true
+---
+
+# Post-edit verification
+
+[AGENTS.md](AGENTS.md) is the workflow source of truth.
+
+After substantive edits, run **`npm run verify`** (ESLint, then `tsc -b` and `vite build` via `npm run build`) and fix any failures before finishing.
+
+There is no generated route tree or Vitest suite in this repo yet; if tests are added later, extend this rule accordingly.

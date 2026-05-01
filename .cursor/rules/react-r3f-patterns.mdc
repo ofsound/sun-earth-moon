@@ -1,0 +1,28 @@
+---
+description: React, React Three Fiber, and Three.js patterns for this app
+globs: "**/*.{tsx,ts}"
+alwaysApply: false
+---
+
+# React and R3F patterns
+
+## React
+
+- Prefer **function components** with hooks. Most feature code currently lives in [src/App.tsx](src/App.tsx); when you add substantial UI or behavior, **extract** components or hooks under `src/` instead of inflating `App.tsx` without reason.
+- Keep **local state** in the component that owns the UX (sim time, lat/lon, facing, view mode) unless you introduce a deliberate shared layer.
+
+## React Three Fiber and drei
+
+- Use **`<Canvas>`** from `@react-three/fiber` for WebGL scenes; use **`useThree`** when you need the camera or gl (see `CameraRig` in `App.tsx`).
+- Use **drei** for helpers already in the project: `OrbitControls`, `Stars`, `useTexture`, `Line`, etc. Prefer existing patterns over new abstractions.
+- Prefer **`useMemo`** / **`useEffect`** for expensive setup (orbit samples, texture clones) rather than recomputing every render.
+- Use **`useFrame`** only when you need per-frame animation or continuous updates; the orbit view does not require it for static time steps.
+
+## Three.js
+
+- Import types and classes from **`three`** (`Vector3`, `Quaternion`, `Color`, `SRGBColorSpace`, materials, etc.).
+- For **color textures**, set `colorSpace = SRGBColorSpace` and `needsUpdate = true` on cloned maps where the codebase already does (Earth/Moon meshes).
+
+## Testing
+
+- This repo **does not** ship a test runner today. Do not assume Vitest or Testing Library. If tests are added, document the chosen tool in AGENTS.md and this rule.

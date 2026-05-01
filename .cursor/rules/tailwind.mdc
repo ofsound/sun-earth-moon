@@ -1,0 +1,15 @@
+---
+description: Tailwind and theme tokens for this UI
+globs: "**/*.{tsx,css}"
+alwaysApply: false
+---
+
+# Tailwind
+
+- Use Tailwind CSS in JSX; avoid large one-off `<style>` blocks unless necessary—prefer utilities and theme tokens from [src/index.css](src/index.css).
+- Do **not** use `space-y-*` or `space-x-*`; use flex or grid with `gap-*` instead.
+- Avoid arbitrary values when an existing utility class is close to the desired value.
+- Use the **semantic token classes** from shadcn/Tailwind setup (`bg-background`, `text-foreground`, `text-muted-foreground`, `border-border`, etc.) defined via CSS variables in `src/index.css`.
+- Do **not** introduce one-off hex colors in JSX when a token already expresses the intent; if you need a new semantic, extend `src/index.css` coherently.
+- Reuse **Radix/shadcn** primitives in [src/components/ui/](src/components/ui/) for buttons, inputs, sliders, and labels instead of inventing divergent styles.
+- Prefer semantic interactive elements (`button`, `a`); if a non-semantic element is clickable, add **`role="button"`** and keyboard support (`Enter`/`Space`) where appropriate (see earth map pin panel pattern in `App.tsx`).

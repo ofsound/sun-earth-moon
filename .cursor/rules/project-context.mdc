@@ -1,0 +1,28 @@
+---
+description: Core stack and conventions (React, Vite, R3F, ESLint, Tailwind 4)
+alwaysApply: true
+---
+
+# Project context
+
+- **Stack:** React 19, Vite, TypeScript, Tailwind CSS 4 (`@tailwindcss/vite`), ESLint (flat config), @react-three/fiber, @react-three/drei, three, astronomy-engine, Luxon, Cloudflare Vite plugin + Wrangler for deploy/preview.
+
+## Styling
+
+- Tailwind utilities in JSX; design tokens and `@theme` live in [src/index.css](src/index.css) (shadcn-style CSS variables, `@import "shadcn/tailwind.css"`).
+
+## Import aliases
+
+- **`@/*`** maps to `src/*` ([tsconfig.json](tsconfig.json) `paths` and [vite.config.ts](vite.config.ts) `resolve.alias`).
+
+## Import order
+
+When adding or editing imports in `src/**/*.ts` or `src/**/*.tsx`, use **one blank line between groups**; no blank line within a group.
+
+1. **React** — `react`, `react-dom`, `react/*`
+2. **External packages** — e.g. `@react-three/fiber`, `@react-three/drei`, `three`, `astronomy-engine`, `luxon`, `lucide-react`
+3. **App imports** — `@/lib/...`, `@/components/...`
+4. **Relative** — `./...`, `../...` (co-located modules)
+5. **`import type`** — group type-only imports last when it improves clarity
+
+If a module supplies both types and values, one import line is fine; place it by primary use. ESLint does not auto-sort imports; keep order readable and consistent with surrounding files.
