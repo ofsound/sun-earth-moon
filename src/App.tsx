@@ -1431,7 +1431,7 @@ function App() {
             Sky paths
           </Button>
           <Button type="button" className="min-w-[7.25rem] whitespace-nowrap" size="sm" variant={activeView === "orbit" ? "default" : "outline"} onClick={() => setActiveView("orbit")}>
-            Earth & Moon
+            3D Model
           </Button>
         </nav>
       </header>
@@ -1534,7 +1534,9 @@ function App() {
                   </div>
                 </div>
                 <div className="field-stack min-w-0">
-                  <Label htmlFor="sim-time-slider">Time of day</Label>
+                  <Label className="mb-2" htmlFor="sim-time-slider">
+                    Time of day
+                  </Label>
                   <Slider
                     id="sim-time-slider"
                     min={0}
@@ -1546,14 +1548,23 @@ function App() {
                       setSimTimeMs(civicInstantMillis(zoneId, simTimeMs, {hour: Math.floor(mins / 60), minute: mins % 60}));
                     }}
                   />
-                  <span className="time-readout text-muted-foreground">
-                    {dtLocal.toFormat("HH:mm")} {dtLocal.toFormat("z")} • {dtUtc.toFormat("HH:mm")} UTC
-                  </span>
-                </div>
-                <div className="flex justify-end">
-                  <Button type="button" variant="outline" size="sm" className="whitespace-nowrap" onClick={() => setSimTimeMs(Date.now())}>
-                    Current Time
-                  </Button>
+                  <div className="mt-6 flex min-w-0 flex-row items-start justify-between gap-4">
+                    <div className="flex min-w-0 flex-col gap-0.5">
+                      <span className="text-lg font-medium tabular-nums text-foreground">{dtLocal.toFormat("HH:mm")}</span>
+                      <span className="text-sm text-muted-foreground">{dtLocal.toFormat("z")}</span>
+                      <span className="text-sm tabular-nums text-muted-foreground">
+                        {dtUtc.toFormat("HH:mm")} UTC
+                      </span>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="shrink-0 whitespace-nowrap"
+                      onClick={() => setSimTimeMs(Date.now())}>
+                      Current Time
+                    </Button>
+                  </div>
                 </div>
               </div>
               <section className="local-almanac" aria-label="Local sun and moon almanac">
@@ -1575,7 +1586,7 @@ function App() {
                     <strong>{civicEventTimeLabel(localAlmanac.moonSet, zoneId, localDayStartUtc)}</strong>
                   </div>
                 </div>
-                <div className="moon-phase-card">
+                <div className="moon-phase-card mt-6">
                   <MoonPhaseVisual phaseFraction={localAlmanac.moonPhaseFraction} waxing={localAlmanac.moonPhaseDegrees < 180} />
                   <div>
                     <h3>{localAlmanac.moonPhaseName}</h3>
@@ -1590,9 +1601,7 @@ function App() {
               </section>
             </section>
 
-            <section className="pin-panel">
-              <h2>Earth pin placement</h2>
-              <p className="pin-zone-id">{zoneId}</p>
+            <section className="pin-panel" aria-label="Earth pin placement">
               <div
                 className="earth-map"
                 style={{backgroundImage: `url(${worldMapTexture})`}}
@@ -1613,9 +1622,7 @@ function App() {
                 <DayNightTerminatorOverlay subsolarPoint={orbitalState.subsolarPoint} />
                 <div className="earth-pin" style={{left: pinLeft, top: pinTop}} />
               </div>
-              <p className="day-night-caption">
-                Day/night at selected time • subsolar point {orbitalState.subsolarPoint.latitude.toFixed(1)}°, {orbitalState.subsolarPoint.longitude.toFixed(1)}°
-              </p>
+              <p className="m-0 flex select-none font-mono text-sm leading-none font-medium text-foreground">{zoneId}</p>
               <div className="pin-panel-controls">
                 <div className="field-stack">
                   <Label htmlFor="pin-latitude">Latitude</Label>

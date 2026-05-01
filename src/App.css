@@ -70,11 +70,6 @@ p {
   grid-column: span 2;
 }
 
-.time-readout {
-  font-size: 0.78rem;
-  line-height: 1.35;
-}
-
 .local-almanac {
   display: grid;
   grid-column: 1 / -1;
@@ -156,17 +151,6 @@ p {
   align-content: start;
 }
 
-.pin-panel h2 {
-  font-size: 1rem;
-}
-
-.pin-zone-id {
-  margin: 0;
-  font-size: 0.75rem;
-  color: var(--muted-foreground);
-  font-family: ui-monospace, monospace;
-}
-
 .pin-panel-controls {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -208,11 +192,6 @@ p {
   border: 2px solid #ffffff;
   background: #ff6363;
   box-shadow: 0 0 0 2px #00000066;
-}
-
-.day-night-caption {
-  color: var(--muted-foreground);
-  font-size: 0.78rem;
 }
 
 .view-toggle {
