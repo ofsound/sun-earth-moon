@@ -33,10 +33,6 @@ p {
   gap: 1rem;
 }
 
-.app-header p {
-  color: #d1d9e7;
-}
-
 .orbit-mode .app-header {
   position: relative;
   z-index: 2;
@@ -55,15 +51,28 @@ p {
   display: grid;
   gap: 0.5rem;
   grid-template-columns: repeat(auto-fit, minmax(84px, 1fr));
-  background: #111723;
-  border: 1px solid #2a3448;
-  border-radius: 12px;
+  background: var(--card);
+  color: var(--card-foreground);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
   padding: 0.75rem;
   align-content: start;
 }
 
-.controls-grid label:nth-child(4) {
+.field-stack {
+  display: grid;
+  gap: 0.35rem;
+  align-content: start;
+  min-width: 0;
+}
+
+.field-stack-span-2 {
   grid-column: span 2;
+}
+
+.time-readout {
+  font-size: 0.78rem;
+  line-height: 1.35;
 }
 
 .local-almanac {
@@ -72,7 +81,7 @@ p {
   gap: 0.65rem;
   margin-top: 0.2rem;
   padding-top: 0.65rem;
-  border-top: 1px solid #2a3448;
+  border-top: 1px solid var(--border);
 }
 
 .almanac-times {
@@ -88,12 +97,12 @@ p {
 }
 
 .almanac-times span {
-  color: #aebbd0;
+  color: var(--muted-foreground);
   font-size: 0.72rem;
 }
 
 .almanac-times strong {
-  color: #f2f6ff;
+  color: var(--foreground);
   font-size: 0.9rem;
   font-weight: 650;
   white-space: nowrap;
@@ -115,34 +124,31 @@ p {
 
 .moon-phase-card h3 {
   margin: 0 0 0.14rem;
-  color: #f4f7ff;
+  color: var(--foreground);
   font-size: 1rem;
   line-height: 1.15;
 }
 
 .moon-phase-card p {
-  color: #c7d3e6;
+  color: var(--muted-foreground);
   font-size: 0.8rem;
   line-height: 1.3;
 }
 
-label {
-  display: grid;
-  gap: 0.25rem;
+.field-stack label,
+.field-stack [data-slot="label"] {
   font-size: 0.82rem;
-}
-
-input {
-  width: 100%;
+  font-weight: 500;
 }
 
 .pin-panel,
 .panel {
   display: grid;
   gap: 0.45rem;
-  background: #111723;
-  border: 1px solid #2a3448;
-  border-radius: 12px;
+  background: var(--card);
+  color: var(--card-foreground);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
   padding: 0.75rem;
 }
 
@@ -157,7 +163,7 @@ input {
 .pin-zone-id {
   margin: 0;
   font-size: 0.75rem;
-  color: #9fb4d9;
+  color: var(--muted-foreground);
   font-family: ui-monospace, monospace;
 }
 
@@ -173,8 +179,8 @@ input {
   width: 100%;
   aspect-ratio: 2 / 1;
   overflow: hidden;
-  border: 1px solid #3c4b66;
-  border-radius: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
   cursor: crosshair;
   background-color: #12243f;
   background-size: cover;
@@ -205,37 +211,21 @@ input {
 }
 
 .day-night-caption {
-  color: #aebbd0;
+  color: var(--muted-foreground);
   font-size: 0.78rem;
 }
 
 .view-toggle {
-  display: flex;
-  gap: 0.35rem;
-  padding: 0.22rem;
-  border: 1px solid #2a3448;
-  border-radius: 10px;
-  background: #0e1523;
-}
-
-.view-toggle button {
-  border: 0;
-  min-width: 7.25rem;
-  background: transparent;
-  color: #deebff;
-  white-space: nowrap;
-}
-
-.view-toggle button.active {
-  background: #dce9ff;
-  color: #07101f;
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--border);
+  background: color-mix(in oklch, var(--muted) 55%, transparent);
 }
 
 .sky-canvas {
   width: 100%;
   height: 420px;
-  border-radius: 10px;
-  border: 1px solid #2f3e5a;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
 }
 
 .readout {
@@ -243,23 +233,20 @@ input {
   flex-wrap: wrap;
   gap: 1rem;
   font-size: 0.95rem;
-  color: #d5e4ff;
+  color: var(--foreground);
 }
 
 .readout-sky-footer {
-  align-items: flex-end;
+  justify-content: center;
+  align-items: center;
 }
 
 .readout-facing {
-  flex: 1 1 16rem;
-  min-width: min(100%, 14rem);
+  flex: 0 1 28rem;
+  width: 100%;
   max-width: 28rem;
+  min-width: min(100%, 14rem);
   font-size: 0.82rem;
-  color: #d5e4ff;
-}
-
-.readout-facing input[type="range"] {
-  margin-top: 0.2rem;
 }
 
 .orbit-canvas-wrap {
@@ -284,7 +271,7 @@ input {
     width: 100%;
   }
 
-  .view-toggle button {
+  .view-toggle [data-slot="button"] {
     flex: 1;
     min-width: 0;
   }

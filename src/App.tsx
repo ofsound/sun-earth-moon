@@ -5,6 +5,10 @@ import {Body, DEG2RAD, Equator, EquatorFromVector, GeoVector, Horizon, Illuminat
 import tzlookup from "tz-lookup";
 import {DateTime} from "luxon";
 import {AdditiveBlending, BackSide, Color, DirectionalLight, Matrix4, Quaternion, SRGBColorSpace, Vector3} from "three";
+import {Button} from "@/components/ui/button";
+import {Input} from "@/components/ui/input";
+import {Label} from "@/components/ui/label";
+import {Slider} from "@/components/ui/slider";
 import earthCloudsTexture from "./assets/planets/earth-clouds.png";
 import earthDayTexture from "./assets/planets/earth-day.jpg";
 import earthSpecularTexture from "./assets/planets/earth-specular.jpg";
@@ -52,9 +56,18 @@ type HorizonCrossing = {
   isRise: boolean;
 };
 
+type SkyDiskHover = {
+  panoramaX: number;
+  y: number;
+  label: string;
+  labelY: number;
+  hitRadius: number;
+};
+
 type StaticSkyScene = {
   canvas: HTMLCanvasElement;
   crossings: HorizonCrossing[];
+  diskHovers: SkyDiskHover[];
   width: number;
   height: number;
 };
@@ -96,6 +109,18 @@ const civicInstantMillis = (zoneId: string, instantMs: number, patch: Partial<{y
     },
     {zone: zoneId},
   );
+  return next.isValid ? next.toUTC().toMillis() : instantMs;
+};
+
+/** Month/day spinners can emit values outside 1–12 / 1–31; Luxon `set` rolls into adjacent calendar units. */
+const civicSetMonthOrDayMillis = (zoneId: string, instantMs: number, part: {month: number} | {day: number}) => {
+  const base = DateTime.fromMillis(instantMs, {zone: "utc"}).setZone(zoneId);
+  const n = "month" in part ? Math.trunc(part.month) : Math.trunc(part.day);
+  if (!Number.isFinite(n)) return instantMs;
+  const next =
+    "month" in part
+      ? base.set({month: n, second: 0, millisecond: 0})
+      : base.set({day: n, second: 0, millisecond: 0});
   return next.isValid ? next.toUTC().toMillis() : instantMs;
 };
 
@@ -252,6 +277,44 @@ const buildDisplayPath = (body: Body, observer: Observer, currentTime: Date, loc
 const toSceneVector = (vector: Vec3) => new Vector3(vector.x, vector.z, vector.y);
 const normalizeDegrees = (degrees: number) => ((degrees % 360) + 360) % 360;
 
+/** Sky-chart horizontal axis: linear azimuth in degrees (same as `(x / width) * 360 - 360`). */
+const interpolateAltitudeAtDisplayAzimuth = (rawPoints: SkyPoint[], displaySkyDeg: number, preferNearTimeMs: number | null = null): number | null => {
+  const targetWrapped = normalizeDegrees(displaySkyDeg);
+  const hits: {altitude: number; timeMs: number}[] = [];
+
+  for (let index = 1; index < rawPoints.length; index += 1) {
+    const p = rawPoints[index - 1];
+    const q = rawPoints[index];
+    const a0 = p.relativeAzimuth;
+    const a1 = q.relativeAzimuth;
+    const da = a1 - a0;
+    if (Math.abs(da) > 180 || Math.abs(da) < 1e-9) continue;
+
+    const mid = (a0 + a1) / 2;
+    const kCenter = Math.round((mid - targetWrapped) / 360);
+
+    for (let k = kCenter - 3; k <= kCenter + 3; k += 1) {
+      const aim = targetWrapped + 360 * k;
+      const t = (aim - a0) / da;
+      if (t >= 0 && t <= 1) {
+        const altitude = p.altitude + t * (q.altitude - p.altitude);
+        const pMs = p.timeMs;
+        const qMs = q.timeMs;
+        const timeMs = pMs !== undefined && qMs !== undefined ? pMs + t * (qMs - pMs) : preferNearTimeMs ?? 0;
+        hits.push({altitude, timeMs});
+        break;
+      }
+    }
+  }
+
+  if (hits.length === 0) return null;
+  if (preferNearTimeMs !== null && hits.every((h) => Number.isFinite(h.timeMs))) {
+    return hits.sort((a, b) => Math.abs(a.timeMs - preferNearTimeMs) - Math.abs(b.timeMs - preferNearTimeMs))[0].altitude;
+  }
+
+  return hits[0].altitude;
+};
+
 const drawSkyViewport = (canvas: HTMLCanvasElement, scene: StaticSkyScene, facingDegrees: number, pointer: ChartPointer | null) => {
   const context = canvas.getContext("2d");
   if (!context) return;
@@ -284,20 +347,26 @@ const drawSkyViewport = (canvas: HTMLCanvasElement, scene: StaticSkyScene, facin
     context.fillText(label, Math.min(scene.width - textWidth - 6, Math.max(6, x - textWidth / 2)), scene.height - 10);
   });
 
-  const hitRadius = 22;
-  const hoveredCrossing = pointer
-    ? scene.crossings.reduce<{crossing: HorizonCrossing | null; distance: number}>(
-        (nearest, crossing) => {
-          const visibleX = crossing.x - sourceX;
-          const distance = Math.hypot(pointer.x - visibleX, pointer.y - crossing.y);
-          return distance <= hitRadius && distance < nearest.distance ? {crossing: {...crossing, x: visibleX}, distance} : nearest;
+  const hitRadiusCrossing = 22;
+  const hoveredTooltip = pointer
+    ? [...scene.crossings, ...scene.diskHovers].reduce<{visibleX: number; y: number; label: string; labelY: number; hitRadius: number; distance: number} | null>(
+        (nearest, target) => {
+          const panoramaX = "x" in target ? target.x : target.panoramaX;
+          const hitRadius = "hitRadius" in target && target.hitRadius !== undefined ? target.hitRadius : hitRadiusCrossing;
+          const visibleX = panoramaX - sourceX;
+          const distance = Math.hypot(pointer.x - visibleX, pointer.y - target.y);
+          if (distance > hitRadius) return nearest;
+          if (!nearest || distance < nearest.distance) {
+            return {visibleX, y: target.y, label: target.label, labelY: target.labelY, hitRadius, distance};
+          }
+          return nearest;
         },
-        {crossing: null, distance: Number.POSITIVE_INFINITY},
-      ).crossing
+        null,
+      )
     : null;
 
-  canvas.style.cursor = hoveredCrossing ? "pointer" : "default";
-  if (!hoveredCrossing) return;
+  canvas.style.cursor = hoveredTooltip ? "pointer" : "default";
+  if (!hoveredTooltip) return;
 
   context.font = "600 12px system-ui";
   context.textBaseline = "middle";
@@ -305,11 +374,11 @@ const drawSkyViewport = (canvas: HTMLCanvasElement, scene: StaticSkyScene, facin
   const paddingX = 7;
   const paddingY = 4;
   const radius = 4;
-  const textWidth = context.measureText(hoveredCrossing.label).width;
+  const textWidth = context.measureText(hoveredTooltip.label).width;
   const badgeWidth = textWidth + paddingX * 2;
   const badgeHeight = 20 + paddingY;
-  const badgeX = Math.min(scene.width - badgeWidth - 6, Math.max(6, hoveredCrossing.x + 8));
-  const badgeY = Math.min(scene.height - badgeHeight - 6, Math.max(6, hoveredCrossing.labelY - badgeHeight / 2));
+  const badgeX = Math.min(scene.width - badgeWidth - 6, Math.max(6, hoveredTooltip.visibleX + 8));
+  const badgeY = Math.min(scene.height - badgeHeight - 6, Math.max(6, hoveredTooltip.labelY - badgeHeight / 2));
 
   context.fillStyle = "#ffffff";
   context.strokeStyle = "rgba(0, 0, 0, 0.45)";
@@ -329,7 +398,7 @@ const drawSkyViewport = (canvas: HTMLCanvasElement, scene: StaticSkyScene, facin
   context.stroke();
 
   context.fillStyle = "#05070d";
-  context.fillText(hoveredCrossing.label, badgeX + paddingX, badgeY + badgeHeight / 2);
+  context.fillText(hoveredTooltip.label, badgeX + paddingX, badgeY + badgeHeight / 2);
   context.textBaseline = "alphabetic";
 };
 
@@ -595,88 +664,52 @@ function SkyPathChart({
     context.lineTo(panoramaWidth, horizonY);
     context.stroke();
 
-    const buildContinuousCurve = (rawPoints: SkyPoint[]) => {
+    type AltitudePathPoint = {x: number; y: number; relativeAzimuth: number};
+
+    const buildAltitudePathCurve = (rawPoints: SkyPoint[], preferNearTimeMs: number | null) => {
       if (rawPoints.length < 2) return null;
 
-      const altitudes = rawPoints.map((point) => point.altitude);
-      const minAltitude = Math.min(...altitudes);
-      const maxAltitude = Math.max(...altitudes);
-      const centerAltitude = (minAltitude + maxAltitude) / 2;
-      const amplitude = Math.max(8, (maxAltitude - minAltitude) / 2);
-      const averageAltitude = altitudes.reduce((total, altitude) => total + altitude, 0) / rawPoints.length;
-      const phaseVector = rawPoints.reduce(
-        (total, point) => {
-          const angle = normalizeDegrees(point.relativeAzimuth) * DEG2RAD;
-          const altitudeWeight = point.altitude - averageAltitude;
-
-          return {
-            x: total.x + altitudeWeight * Math.cos(angle),
-            y: total.y + altitudeWeight * Math.sin(angle),
-          };
-        },
-        {x: 0, y: 0},
-      );
-      const highestPoint = rawPoints.reduce((highest, point) => (point.altitude > highest.altitude ? point : highest), rawPoints[0]);
-      const phase = Math.hypot(phaseVector.x, phaseVector.y) > 1e-6 ? Math.atan2(phaseVector.y, phaseVector.x) : normalizeDegrees(highestPoint.relativeAzimuth) * DEG2RAD;
-
-      const altitudeAtSkyDegree = (skyDegrees: number) => {
-        const angle = normalizeDegrees(skyDegrees) * DEG2RAD;
-        return centerAltitude + amplitude * Math.cos(angle - phase);
-      };
-
-      const yAtSkyDegree = (skyDegrees: number) => yFromAlt(altitudeAtSkyDegree(skyDegrees));
-
-      const horizonSkyDegrees: number[] = [];
-      const horizonSamples = 720;
-      let previousDegree = 0;
-      let previousAltitude = altitudeAtSkyDegree(previousDegree);
-
-      for (let index = 1; index <= horizonSamples; index += 1) {
-        const currentDegree = (index / horizonSamples) * 360;
-        const currentAltitude = altitudeAtSkyDegree(currentDegree);
-
-        if (previousAltitude === 0 || previousAltitude * currentAltitude < 0) {
-          const fraction = previousAltitude / (previousAltitude - currentAltitude);
-          horizonSkyDegrees.push(previousDegree + (currentDegree - previousDegree) * fraction);
-        }
-
-        previousDegree = currentDegree;
-        previousAltitude = currentAltitude;
-      }
-
       const sampleCount = Math.max(360, Math.round(panoramaWidth / 2));
-      const points = Array.from({length: sampleCount + 1}, (_, index) => {
+      const points: AltitudePathPoint[] = [];
+
+      for (let index = 0; index <= sampleCount; index += 1) {
         const x = (index / sampleCount) * panoramaWidth;
         const skyDegrees = (x / width) * 360 - 360;
-
-        return {
+        const altitude = interpolateAltitudeAtDisplayAzimuth(rawPoints, skyDegrees, preferNearTimeMs);
+        points.push({
           x,
-          y: yAtSkyDegree(skyDegrees),
-        };
-      });
-
-      return {points, yAtSkyDegree, horizonSkyDegrees};
-    };
-
-    const traceContinuousCurve = (curve: NonNullable<ReturnType<typeof buildContinuousCurve>>) => {
-      if (curve.points.length === 0) return;
-
-      context.beginPath();
-      context.moveTo(curve.points[0].x, curve.points[0].y);
-
-      for (let index = 1; index < curve.points.length - 1; index += 1) {
-        const point = curve.points[index];
-        const next = curve.points[index + 1];
-        const endX = (point.x + next.x) / 2;
-        const endY = (point.y + next.y) / 2;
-        context.quadraticCurveTo(point.x, point.y, endX, endY);
+          y: altitude === null ? Number.NaN : yFromAlt(altitude),
+          relativeAzimuth: skyDegrees,
+        });
       }
 
-      const lastPoint = curve.points[curve.points.length - 1];
-      context.lineTo(lastPoint.x, lastPoint.y);
+      return {points};
     };
 
-    const drawBelowHorizonPath = (curve: NonNullable<ReturnType<typeof buildContinuousCurve>>, color: string) => {
+    const traceAltitudePath = (curve: NonNullable<ReturnType<typeof buildAltitudePathCurve>>) => {
+      let previousFinite: AltitudePathPoint | null = null;
+
+      for (const current of curve.points) {
+        if (!Number.isFinite(current.y)) {
+          if (previousFinite !== null) context.stroke();
+          previousFinite = null;
+          continue;
+        }
+
+        if (previousFinite === null) {
+          context.beginPath();
+          context.moveTo(current.x, current.y);
+        } else {
+          context.lineTo(current.x, current.y);
+        }
+
+        previousFinite = current;
+      }
+
+      if (previousFinite !== null) context.stroke();
+    };
+
+    const drawBelowHorizonPath = (curve: NonNullable<ReturnType<typeof buildAltitudePathCurve>>, color: string) => {
       context.save();
       context.beginPath();
       context.rect(0, horizonY, panoramaWidth, height - horizonY);
@@ -685,12 +718,11 @@ function SkyPathChart({
       context.globalAlpha = 0.32;
       context.lineWidth = 1.5;
       context.setLineDash([5, 6]);
-      traceContinuousCurve(curve);
-      context.stroke();
+      traceAltitudePath(curve);
       context.restore();
     };
 
-    const drawVisiblePath = (curve: NonNullable<ReturnType<typeof buildContinuousCurve>>, color: string) => {
+    const drawVisiblePath = (curve: NonNullable<ReturnType<typeof buildAltitudePathCurve>>, color: string) => {
       context.save();
       context.beginPath();
       context.rect(0, 0, panoramaWidth, horizonY);
@@ -699,12 +731,11 @@ function SkyPathChart({
       context.globalAlpha = 1;
       context.lineWidth = 2.5;
       context.setLineDash([]);
-      traceContinuousCurve(curve);
-      context.stroke();
+      traceAltitudePath(curve);
       context.restore();
     };
 
-    const getHorizonCrossings = (points: SkyPoint[], curve: NonNullable<ReturnType<typeof buildContinuousCurve>>, color: string, labels: HorizonEventLabel) => {
+    const getHorizonCrossings = (points: SkyPoint[], color: string, labels: HorizonEventLabel) => {
       const baseCrossings: Array<Omit<HorizonCrossing, "x" | "y"> & {relativeAzimuth: number}> = [];
       const usedCrossingKeys = new Set<string>();
 
@@ -722,20 +753,6 @@ function SkyPathChart({
           timeMs: crossingTimeMs,
           isRise,
         });
-      };
-
-      const circularDistance = (a: number, b: number) => Math.abs(normalizeSignedDegrees(a - b));
-
-      const nearestBaseCrossing = (relativeAzimuth: number, usedIndexes: Set<number>) => {
-        const candidates = baseCrossings
-          .map((crossing, index) => ({crossing, index, distance: circularDistance(relativeAzimuth, crossing.relativeAzimuth)}))
-          .filter(({index}) => !usedIndexes.has(index))
-          .sort((a, b) => a.distance - b.distance);
-
-        const selected = candidates[0] ?? baseCrossings.map((crossing, index) => ({crossing, index, distance: circularDistance(relativeAzimuth, crossing.relativeAzimuth)})).sort((a, b) => a.distance - b.distance)[0];
-        if (selected) usedIndexes.add(selected.index);
-
-        return selected?.crossing ?? null;
       };
 
       for (let index = 1; index < points.length; index += 1) {
@@ -767,23 +784,7 @@ function SkyPathChart({
         pushCrossing(relativeAzimuth, crossingTimeMs, previous.altitude < current.altitude);
       }
 
-      const usedBaseCrossingIndexes = new Set<number>();
-      const visualCrossings = curve.horizonSkyDegrees.map((skyDegrees, index) => {
-        const relativeAzimuth = normalizeSignedDegrees(skyDegrees);
-        const baseCrossing = nearestBaseCrossing(relativeAzimuth, usedBaseCrossingIndexes);
-        const fallbackIsRise = index % 2 === 0;
-
-        return {
-          relativeAzimuth,
-          color,
-          label: baseCrossing?.label ?? (fallbackIsRise ? labels.rise : labels.set),
-          labelY: horizonY + ((baseCrossing?.isRise ?? fallbackIsRise) ? -10 : 20),
-          timeMs: baseCrossing?.timeMs ?? null,
-          isRise: baseCrossing?.isRise ?? fallbackIsRise,
-        };
-      });
-
-      return visualCrossings.flatMap((crossing) =>
+      return baseCrossings.flatMap((crossing) =>
         panoramaOffsets.flatMap((degreeOffset) => {
           const x = xFromSkyDegrees(crossing.relativeAzimuth + degreeOffset);
           if (x < -40 || x > panoramaWidth + 40) return [];
@@ -803,8 +804,8 @@ function SkyPathChart({
       );
     };
 
-    const sunCurve = buildContinuousCurve(sunPath);
-    const moonCurve = buildContinuousCurve(moonPath);
+    const sunCurve = buildAltitudePathCurve(sunPath, sunNow.timeMs ?? null);
+    const moonCurve = buildAltitudePathCurve(moonPath, moonNow.timeMs ?? null);
     if (!sunCurve || !moonCurve) return;
 
     drawBelowHorizonPath(sunCurve, "#f5bf42");
@@ -812,7 +813,7 @@ function SkyPathChart({
     drawVisiblePath(sunCurve, "#f5bf42");
     drawVisiblePath(moonCurve, "#7cc3ff");
 
-    const crossings = [...getHorizonCrossings(sunPath, sunCurve, "#f5bf42", {...sunLabels}), ...getHorizonCrossings(moonPath, moonCurve, "#7cc3ff", {...moonLabels})];
+    const crossings = [...getHorizonCrossings(sunPath, "#f5bf42", {...sunLabels}), ...getHorizonCrossings(moonPath, "#7cc3ff", {...moonLabels})];
     crossings.forEach(({x, y, color}) => {
       context.strokeStyle = color;
       context.lineWidth = 2;
@@ -821,22 +822,74 @@ function SkyPathChart({
       context.stroke();
     });
 
-    const drawNowMarker = (point: SkyPoint, curve: NonNullable<ReturnType<typeof buildContinuousCurve>>, color: string, radius: number) => {
+    const relativeAzimuthOnPath = (path: SkyPoint[], point: SkyPoint) => {
+      if (point.timeMs === undefined) return point.relativeAzimuth;
+
+      let bestAzimuth = path[0]?.relativeAzimuth ?? point.relativeAzimuth;
+      let bestDelta = Infinity;
+      for (const sample of path) {
+        if (sample.timeMs === undefined) continue;
+        const delta = Math.abs(sample.timeMs - point.timeMs);
+        if (delta < bestDelta) {
+          bestDelta = delta;
+          bestAzimuth = sample.relativeAzimuth;
+        }
+      }
+
+      return bestAzimuth;
+    };
+
+    const drawNowMarker = (point: SkyPoint, path: SkyPoint[], color: string, radius: number) => {
+      const relativeAzimuth = relativeAzimuthOnPath(path, point);
+      const y = yFromAlt(point.altitude);
       context.fillStyle = color;
       panoramaOffsets.forEach((degreeOffset) => {
-        const skyDegrees = point.relativeAzimuth + degreeOffset;
+        const skyDegrees = relativeAzimuth + degreeOffset;
         const x = xFromSkyDegrees(skyDegrees);
         if (x < -radius || x > panoramaWidth + radius) return;
         context.beginPath();
-        context.arc(x, curve.yAtSkyDegree(skyDegrees), radius, 0, Math.PI * 2);
+        context.arc(x, y, radius, 0, Math.PI * 2);
         context.fill();
       });
     };
 
-    drawNowMarker(sunNow, sunCurve, "#ffd15e", 20);
-    drawNowMarker(moonNow, moonCurve, "#8bc9ff", 10);
+    drawNowMarker(sunNow, sunPath, "#ffd15e", 20);
+    drawNowMarker(moonNow, moonPath, "#8bc9ff", 10);
 
-    const scene = {canvas: sceneCanvas, crossings, width, height};
+    const sunDiskHitRadius = 26;
+    const sunHoverLabel = `sun az ${sunNow.azimuth.toFixed(1)}°, alt ${sunNow.altitude.toFixed(1)}°`;
+    const diskHovers: SkyDiskHover[] = [];
+    panoramaOffsets.forEach((degreeOffset) => {
+      const skyDegrees = relativeAzimuthOnPath(sunPath, sunNow) + degreeOffset;
+      const x = xFromSkyDegrees(skyDegrees);
+      if (x < -sunDiskHitRadius || x > panoramaWidth + sunDiskHitRadius) return;
+      const y = yFromAlt(sunNow.altitude);
+      diskHovers.push({
+        panoramaX: x,
+        y,
+        label: sunHoverLabel,
+        labelY: y - 26,
+        hitRadius: sunDiskHitRadius,
+      });
+    });
+
+    const moonDiskHitRadius = 16;
+    const moonHoverLabel = `moon az ${moonNow.azimuth.toFixed(1)}°, alt ${moonNow.altitude.toFixed(1)}°`;
+    panoramaOffsets.forEach((degreeOffset) => {
+      const skyDegrees = relativeAzimuthOnPath(moonPath, moonNow) + degreeOffset;
+      const x = xFromSkyDegrees(skyDegrees);
+      if (x < -moonDiskHitRadius || x > panoramaWidth + moonDiskHitRadius) return;
+      const y = yFromAlt(moonNow.altitude);
+      diskHovers.push({
+        panoramaX: x,
+        y,
+        label: moonHoverLabel,
+        labelY: y - 20,
+        hitRadius: moonDiskHitRadius,
+      });
+    });
+
+    const scene = {canvas: sceneCanvas, crossings, diskHovers, width, height};
     staticSceneRef.current = scene;
     drawSkyViewport(canvas, scene, facingDegreesRef.current, pointerRef.current);
   }, [sunContextPath, moonContextPath, sunNow, moonNow, sunLabels, moonLabels, zoneId, localDayStartUtc, canvasSize]);
@@ -1102,52 +1155,124 @@ function App() {
   return (
     <div className={`app-shell ${activeView === "orbit" ? "orbit-mode" : ""}`}>
       <header className="app-header">
-        <div>
-          <h1>Sun • Earth • Moon Explorer</h1>
-          <p>Uses real astronomical ephemeris data via Astronomy Engine.</p>
+        <div className="flex min-w-0 flex-1 flex-row flex-wrap items-center gap-x-4 gap-y-1">
+          <h1 className="shrink-0 text-xl">Sun • Earth • Moon</h1>
+          <time className="min-w-0 text-sm font-medium tracking-tight text-muted-foreground tabular-nums md:text-base" dateTime={dtLocal.toISO() ?? undefined} title={dtLocal.toFormat("cccc, d LLLL yyyy, HH:mm:ss ZZZZ")}>
+            {dtLocal.toFormat("yyyy/MM/dd HH:mm")}
+          </time>
         </div>
-        <nav className="view-toggle" aria-label="View mode">
-          <button className={activeView === "sky" ? "active" : ""} onClick={() => setActiveView("sky")}>
+        <nav className="view-toggle flex flex-wrap gap-1 p-1" aria-label="View mode">
+          <Button type="button" className="min-w-[7.25rem] whitespace-nowrap" size="sm" variant={activeView === "sky" ? "default" : "outline"} onClick={() => setActiveView("sky")}>
             Sky paths
-          </button>
-          <button className={activeView === "orbit" ? "active" : ""} onClick={() => setActiveView("orbit")}>
+          </Button>
+          <Button type="button" className="min-w-[7.25rem] whitespace-nowrap" size="sm" variant={activeView === "orbit" ? "default" : "outline"} onClick={() => setActiveView("orbit")}>
             Earth & Moon
-          </button>
+          </Button>
         </nav>
       </header>
 
       {activeView === "sky" ? (
         <>
+          <section className="panel">
+            <SkyPathChart
+              sunContextPath={dayTracks.sunContextPath}
+              moonContextPath={dayTracks.moonContextPath}
+              sunNow={currentSky.sunNow}
+              moonNow={currentSky.moonNow}
+              sunLabels={chartEventLabels.sun}
+              moonLabels={chartEventLabels.moon}
+              facingDegrees={facingDegrees}
+              zoneId={zoneId}
+              localDayStartUtc={localDayStartUtc}
+            />
+            <div className="readout readout-sky-footer">
+              <div className="readout-facing field-stack my-8">
+                <Slider
+                  id="facing-slider"
+                  min={0}
+                  max={359}
+                  step={1}
+                  value={[facingDegrees]}
+                  onValueChange={(values) => setFacingDegrees(values[0] ?? 0)}
+                />
+                <Label htmlFor="facing-slider" className="mt-4 w-full justify-center text-center">
+                  Facing {Math.round(facingDegrees)}° • {toCompassDirection(facingDegrees)}
+                </Label>
+              </div>
+            </div>
+          </section>
+
           <div className="sky-controls-row">
             <section className="controls-grid">
-              <label>
-                Year
-                <input type="number" min={1} max={9999} value={year} onChange={(event) => setSimTimeMs(civicInstantMillis(zoneId, simTimeMs, {year: Number(event.target.value)}))} />
-              </label>
-              <label>
-                Month
-                <input type="number" min={1} max={12} value={month} onChange={(event) => setSimTimeMs(civicInstantMillis(zoneId, simTimeMs, {month: Number(event.target.value)}))} />
-              </label>
-              <label>
-                Day
-                <input type="number" min={1} max={31} value={day} onChange={(event) => setSimTimeMs(civicInstantMillis(zoneId, simTimeMs, {day: Number(event.target.value)}))} />
-              </label>
-              <label>
-                Time of day
-                <input
-                  type="range"
-                  min={0}
-                  max={24 * 60 - 1}
-                  value={minutesLocal}
-                  onChange={(event) => {
-                    const mins = Number(event.target.value);
-                    setSimTimeMs(civicInstantMillis(zoneId, simTimeMs, {hour: Math.floor(mins / 60), minute: mins % 60}));
-                  }}
-                />
-                <span>
-                  {dtLocal.toFormat("HH:mm")} {dtLocal.toFormat("z")} • {dtUtc.toFormat("HH:mm")} UTC
-                </span>
-              </label>
+              <div className="col-span-full flex min-w-0 flex-col gap-6">
+                <div className="grid min-w-0 grid-cols-3 gap-2">
+                  <div className="field-stack">
+                    <Label htmlFor="sim-year">Year</Label>
+                    <Input
+                      id="sim-year"
+                      type="number"
+                      min={1}
+                      max={9999}
+                      value={year}
+                      onChange={(event) => setSimTimeMs(civicInstantMillis(zoneId, simTimeMs, {year: Number(event.target.value)}))}
+                    />
+                  </div>
+                  <div className="field-stack">
+                    <Label htmlFor="sim-month">Month</Label>
+                    <Input
+                      id="sim-month"
+                      type="number"
+                      inputMode="numeric"
+                      value={month}
+                      onChange={(event) => {
+                        const raw = event.target.value;
+                        if (raw === "" || raw === "-" || raw === "+") return;
+                        const n = Number(raw);
+                        if (!Number.isFinite(n)) return;
+                        setSimTimeMs(civicSetMonthOrDayMillis(zoneId, simTimeMs, {month: n}));
+                      }}
+                    />
+                  </div>
+                  <div className="field-stack">
+                    <Label htmlFor="sim-day">Day</Label>
+                    <Input
+                      id="sim-day"
+                      type="number"
+                      inputMode="numeric"
+                      value={day}
+                      onChange={(event) => {
+                        const raw = event.target.value;
+                        if (raw === "" || raw === "-" || raw === "+") return;
+                        const n = Number(raw);
+                        if (!Number.isFinite(n)) return;
+                        setSimTimeMs(civicSetMonthOrDayMillis(zoneId, simTimeMs, {day: n}));
+                      }}
+                    />
+                  </div>
+                </div>
+                <div className="field-stack min-w-0">
+                  <Label htmlFor="sim-time-slider">Time of day</Label>
+                  <Slider
+                    id="sim-time-slider"
+                    min={0}
+                    max={24 * 60 - 1}
+                    step={1}
+                    value={[minutesLocal]}
+                    onValueChange={(values) => {
+                      const mins = values[0] ?? 0;
+                      setSimTimeMs(civicInstantMillis(zoneId, simTimeMs, {hour: Math.floor(mins / 60), minute: mins % 60}));
+                    }}
+                  />
+                  <span className="time-readout text-muted-foreground">
+                    {dtLocal.toFormat("HH:mm")} {dtLocal.toFormat("z")} • {dtUtc.toFormat("HH:mm")} UTC
+                  </span>
+                </div>
+                <div className="flex justify-end">
+                  <Button type="button" variant="outline" size="sm" className="whitespace-nowrap" onClick={() => setSimTimeMs(Date.now())}>
+                    Current Time
+                  </Button>
+                </div>
+              </div>
               <section className="local-almanac" aria-label="Local sun and moon almanac">
                 <div className="almanac-times">
                   <div>
@@ -1209,45 +1334,17 @@ function App() {
                 Day/night at selected time • subsolar point {orbitalState.subsolarPoint.latitude.toFixed(1)}°, {orbitalState.subsolarPoint.longitude.toFixed(1)}°
               </p>
               <div className="pin-panel-controls">
-                <label>
-                  Latitude
-                  <input type="number" step={0.0001} min={-90} max={90} value={latitude} onChange={(event) => setLatitude(Number(event.target.value))} />
-                </label>
-                <label>
-                  Longitude
-                  <input type="number" step={0.0001} min={-180} max={180} value={longitude} onChange={(event) => setLongitude(Number(event.target.value))} />
-                </label>
+                <div className="field-stack">
+                  <Label htmlFor="pin-latitude">Latitude</Label>
+                  <Input id="pin-latitude" type="number" step={0.0001} min={-90} max={90} value={latitude} onChange={(event) => setLatitude(Number(event.target.value))} />
+                </div>
+                <div className="field-stack">
+                  <Label htmlFor="pin-longitude">Longitude</Label>
+                  <Input id="pin-longitude" type="number" step={0.0001} min={-180} max={180} value={longitude} onChange={(event) => setLongitude(Number(event.target.value))} />
+                </div>
               </div>
             </section>
           </div>
-
-          <section className="panel">
-            <h2>Observer sky view</h2>
-            <p>Human observer view: center is the direction you face; left/right show relative azimuth. The white line is the horizon. Solid arcs are rise-to-set paths; faint dashed arcs are below ground.</p>
-            <SkyPathChart
-              sunContextPath={dayTracks.sunContextPath}
-              moonContextPath={dayTracks.moonContextPath}
-              sunNow={currentSky.sunNow}
-              moonNow={currentSky.moonNow}
-              sunLabels={chartEventLabels.sun}
-              moonLabels={chartEventLabels.moon}
-              facingDegrees={facingDegrees}
-              zoneId={zoneId}
-              localDayStartUtc={localDayStartUtc}
-            />
-            <div className="readout readout-sky-footer">
-              <span>
-                Sun: az {currentSky.sunNow.azimuth.toFixed(1)}°, alt {currentSky.sunNow.altitude.toFixed(1)}°
-              </span>
-              <span>
-                Moon: az {currentSky.moonNow.azimuth.toFixed(1)}°, alt {currentSky.moonNow.altitude.toFixed(1)}°
-              </span>
-              <label className="readout-facing">
-                Facing direction ({Math.round(facingDegrees)}° • {toCompassDirection(facingDegrees)})
-                <input type="range" min={0} max={359} value={facingDegrees} onChange={(event) => setFacingDegrees(Number(event.target.value))} />
-              </label>
-            </div>
-          </section>
         </>
       ) : (
         <main className="orbit-stage">
