@@ -7,11 +7,11 @@ import { defineConfig } from "vite";
 import { cloudflare } from "@cloudflare/vite-plugin";
 
 // https://vite.dev/config/
-export default defineConfig({
-  plugins: [react(), tailwindcss(), cloudflare()],
+export default defineConfig(({mode}) => ({
+  plugins: [react(), tailwindcss(), mode === "https" ? basicSsl() : cloudflare()],
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
     },
   },
-});
+}));
