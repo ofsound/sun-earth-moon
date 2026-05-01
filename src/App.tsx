@@ -2,6 +2,8 @@ import {useEffect, useMemo, useRef, useState} from "react";
 import {Canvas, useThree} from "@react-three/fiber";
 import {Line, OrbitControls, Stars, useTexture} from "@react-three/drei";
 import {Body, DEG2RAD, Equator, EquatorFromVector, GeoVector, Horizon, Illumination, MoonPhase, Observer, SearchMoonPhase, SearchRiseSet, SiderealTime} from "astronomy-engine";
+import {Compass, Square} from "lucide-react";
+import {magvar} from "magvar";
 import tzlookup from "tz-lookup";
 import {DateTime} from "luxon";
 import {AdditiveBlending, BackSide, Color, DirectionalLight, Matrix4, Quaternion, SRGBColorSpace, Vector3} from "three";
@@ -46,6 +48,34 @@ type ChartPointer = {
   y: number;
 };
 
+type CompassStatus = "idle" | "requesting" | "active" | "unsupported" | "denied" | "error";
+
+type CompassState = {
+  status: CompassStatus;
+  message: string;
+  magneticHeading: number | null;
+  trueHeading: number | null;
+  accuracy: number | null;
+  declination: number;
+};
+
+type DeviceOrientationPermissionState = "granted" | "denied";
+
+type DeviceOrientationEventConstructorWithPermission = typeof DeviceOrientationEvent & {
+  requestPermission?: (absolute?: boolean) => Promise<DeviceOrientationPermissionState>;
+};
+
+type SafariDeviceOrientationEvent = DeviceOrientationEvent & {
+  webkitCompassAccuracy?: number;
+  webkitCompassHeading?: number;
+};
+
+type DeviceOrientationSnapshot = {
+  alpha: number | null;
+  beta: number | null;
+  gamma: number | null;
+};
+
 type HorizonCrossing = {
   x: number;
   y: number;
@@ -84,6 +114,8 @@ const normalizeSignedDegrees = (degrees: number) => {
   while (value < -180) value += 360;
   return value;
 };
+
+const isFiniteNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
 
 const interpolateWrappedDegrees = (start: number, end: number, fraction: number) => start + normalizeSignedDegrees(end - start) * fraction;
 
@@ -417,6 +449,191 @@ const toCompassDirection = (degrees: number) => {
   const index = Math.round(normalizeDegrees(degrees) / 22.5) % directions.length;
   return directions[index];
 };
+
+const compassMessage = (state: CompassState) => {
+  if (state.status === "active" && state.trueHeading !== null) {
+    const accuracyNote = state.accuracy !== null && state.accuracy > 20 ? ` • low accuracy ±${Math.round(state.accuracy)}°` : state.accuracy !== null ? ` • accuracy ±${Math.round(state.accuracy)}°` : "";
+    const declinationPrefix = state.declination >= 0 ? "+" : "";
+    return `Using iPhone compass at selected pin • declination ${declinationPrefix}${state.declination.toFixed(1)}°${accuracyNote}`;
+  }
+
+  return state.message;
+};
+
+function useDeviceHeading({latitude, longitude, onHeading}: {latitude: number; longitude: number; onHeading: (headingDegrees: number) => void}) {
+  const declination = useMemo(() => {
+    try {
+      return magvar(latitude, longitude, 0);
+    } catch {
+      return 0;
+    }
+  }, [latitude, longitude]);
+  const [compassState, setCompassState] = useState<CompassState>({
+    status: "idle",
+    message: "Compass off",
+    magneticHeading: null,
+    trueHeading: null,
+    accuracy: null,
+    declination,
+  });
+  const activeRef = useRef(false);
+  const declinationRef = useRef(declination);
+  const magneticHeadingRef = useRef<number | null>(null);
+  const onHeadingRef = useRef(onHeading);
+  const orientationRef = useRef<DeviceOrientationSnapshot>({alpha: null, beta: null, gamma: null});
+
+  useEffect(() => {
+    onHeadingRef.current = onHeading;
+  }, [onHeading]);
+
+  const handleOrientation = useMemo(
+    () => (event: Event) => {
+      const orientationEvent = event as SafariDeviceOrientationEvent;
+      orientationRef.current = {
+        alpha: orientationEvent.alpha,
+        beta: orientationEvent.beta,
+        gamma: orientationEvent.gamma,
+      };
+
+      if (!isFiniteNumber(orientationEvent.webkitCompassHeading)) return;
+
+      const magneticHeading = normalizeDegrees(orientationEvent.webkitCompassHeading);
+      const accuracy = isFiniteNumber(orientationEvent.webkitCompassAccuracy) ? orientationEvent.webkitCompassAccuracy : null;
+      const trueHeading = normalizeDegrees(magneticHeading + declinationRef.current);
+
+      magneticHeadingRef.current = magneticHeading;
+      onHeadingRef.current(trueHeading);
+      setCompassState({
+        status: "active",
+        message: "Using iPhone compass",
+        magneticHeading,
+        trueHeading,
+        accuracy,
+        declination: declinationRef.current,
+      });
+    },
+    [],
+  );
+
+  const removeListeners = useMemo(
+    () => () => {
+      window.removeEventListener("deviceorientation", handleOrientation);
+      window.removeEventListener("deviceorientationabsolute", handleOrientation);
+    },
+    [handleOrientation],
+  );
+
+  const stop = useMemo(
+    () => () => {
+      if (typeof window !== "undefined") removeListeners();
+      activeRef.current = false;
+      setCompassState((current) => ({
+        ...current,
+        status: "idle",
+        message: current.trueHeading === null ? "Compass off" : "Compass stopped",
+      }));
+    },
+    [removeListeners],
+  );
+
+  const start = useMemo(
+    () => async () => {
+      if (typeof window === "undefined" || !("DeviceOrientationEvent" in window)) {
+        setCompassState((current) => ({
+          ...current,
+          status: "unsupported",
+          message: "Device orientation is not available in this browser.",
+          declination: declinationRef.current,
+        }));
+        return;
+      }
+
+      if (!window.isSecureContext) {
+        setCompassState((current) => ({
+          ...current,
+          status: "error",
+          message: "Compass requires HTTPS on iOS Safari. Use npm run dev:https on your local network.",
+          declination: declinationRef.current,
+        }));
+        return;
+      }
+
+      const DeviceOrientationWithPermission = window.DeviceOrientationEvent as DeviceOrientationEventConstructorWithPermission;
+      setCompassState((current) => ({
+        ...current,
+        status: "requesting",
+        message: "Requesting compass permission...",
+        declination: declinationRef.current,
+      }));
+
+      try {
+        if (typeof DeviceOrientationWithPermission.requestPermission === "function") {
+          const permission = await DeviceOrientationWithPermission.requestPermission(true);
+          if (permission !== "granted") {
+            activeRef.current = false;
+            setCompassState((current) => ({
+              ...current,
+              status: "denied",
+              message: "Compass permission was denied.",
+              declination: declinationRef.current,
+            }));
+            return;
+          }
+        }
+
+        removeListeners();
+        activeRef.current = true;
+        window.addEventListener("deviceorientation", handleOrientation);
+        window.addEventListener("deviceorientationabsolute", handleOrientation);
+        setCompassState((current) => ({
+          ...current,
+          status: "active",
+          message: "Waiting for iPhone compass heading...",
+          declination: declinationRef.current,
+        }));
+      } catch (error) {
+        activeRef.current = false;
+        setCompassState((current) => ({
+          ...current,
+          status: "error",
+          message: error instanceof Error ? error.message : "Unable to start the compass.",
+          declination: declinationRef.current,
+        }));
+      }
+    },
+    [handleOrientation, removeListeners],
+  );
+
+  useEffect(() => {
+    declinationRef.current = declination;
+    setCompassState((current) => ({...current, declination}));
+
+    const magneticHeading = magneticHeadingRef.current;
+    if (!activeRef.current || magneticHeading === null) return;
+
+    const trueHeading = normalizeDegrees(magneticHeading + declination);
+    onHeadingRef.current(trueHeading);
+    setCompassState((current) => ({
+      ...current,
+      trueHeading,
+      declination,
+    }));
+  }, [declination]);
+
+  useEffect(() => {
+    return () => {
+      removeListeners();
+      activeRef.current = false;
+    };
+  }, [removeListeners]);
+
+  return {
+    compassState,
+    start,
+    stop,
+    isActive: compassState.status === "active",
+  };
+}
 
 const kilometersPerAstronomicalUnit = 149_597_870.7;
 const earthMeanRadiusKm = 6371;
@@ -1031,6 +1248,16 @@ function App() {
   const [longitude, setLongitude] = useState(-105.9378);
   const [facingDegrees, setFacingDegrees] = useState(180);
   const [activeView, setActiveView] = useState<"sky" | "orbit">("sky");
+  const {
+    compassState,
+    start: startCompass,
+    stop: stopCompass,
+    isActive: compassActive,
+  } = useDeviceHeading({
+    latitude,
+    longitude,
+    onHeading: setFacingDegrees,
+  });
 
   const zoneId = useMemo(() => observingTimeZone(latitude, longitude), [latitude, longitude]);
   const dtLocal = useMemo(() => DateTime.fromMillis(simTimeMs, {zone: "utc"}).setZone(zoneId), [simTimeMs, zoneId]);
@@ -1193,11 +1420,28 @@ function App() {
                   max={359}
                   step={1}
                   value={[facingDegrees]}
-                  onValueChange={(values) => setFacingDegrees(values[0] ?? 0)}
+                  onValueChange={(values) => {
+                    if (compassActive) stopCompass();
+                    setFacingDegrees(values[0] ?? 0);
+                  }}
                 />
                 <Label htmlFor="facing-slider" className="mt-4 w-full justify-center text-center">
                   Facing {Math.round(facingDegrees)}° • {toCompassDirection(facingDegrees)}
                 </Label>
+                <div className="compass-control" aria-live="polite">
+                  {compassActive ? (
+                    <Button type="button" variant="outline" size="sm" className="gap-2" onClick={stopCompass}>
+                      <Square className="size-4" aria-hidden="true" />
+                      Stop
+                    </Button>
+                  ) : (
+                    <Button type="button" variant="outline" size="sm" className="gap-2" disabled={compassState.status === "requesting"} onClick={startCompass}>
+                      <Compass className="size-4" aria-hidden="true" />
+                      Use iPhone Compass
+                    </Button>
+                  )}
+                  <p className="compass-status text-muted-foreground">{compassMessage(compassState)}</p>
+                </div>
               </div>
             </div>
           </section>
