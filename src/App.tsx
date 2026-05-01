@@ -57,6 +57,7 @@ type CompassState = {
   trueHeading: number | null;
   accuracy: number | null;
   declination: number;
+  pointingAltitude: number | null;
 };
 
 type DeviceOrientationPermissionState = "granted" | "denied";
@@ -118,6 +119,12 @@ const normalizeSignedDegrees = (degrees: number) => {
 const isFiniteNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
 
 const interpolateWrappedDegrees = (start: number, end: number, fraction: number) => start + normalizeSignedDegrees(end - start) * fraction;
+
+const deviceSightlineAltitude = ({beta}: DeviceOrientationSnapshot) => {
+  if (!isFiniteNumber(beta)) return null;
+
+  return Math.asin(Math.sin(beta * DEG2RAD)) / DEG2RAD;
+};
 
 const observingTimeZone = (lat: number, lon: number) => {
   try {
@@ -347,7 +354,7 @@ const interpolateAltitudeAtDisplayAzimuth = (rawPoints: SkyPoint[], displaySkyDe
   return hits[0].altitude;
 };
 
-const drawSkyViewport = (canvas: HTMLCanvasElement, scene: StaticSkyScene, facingDegrees: number, pointer: ChartPointer | null) => {
+const drawSkyViewport = (canvas: HTMLCanvasElement, scene: StaticSkyScene, facingDegrees: number, pointingAltitude: number | null, pointer: ChartPointer | null) => {
   const context = canvas.getContext("2d");
   if (!context) return;
 
@@ -378,6 +385,22 @@ const drawSkyViewport = (canvas: HTMLCanvasElement, scene: StaticSkyScene, facin
     const textWidth = context.measureText(label).width;
     context.fillText(label, Math.min(scene.width - textWidth - 6, Math.max(6, x - textWidth / 2)), scene.height - 10);
   });
+
+  if (pointingAltitude !== null) {
+    const targetRadius = 10;
+    const targetX = scene.width / 2;
+    const targetY = yFromAlt(pointingAltitude);
+
+    context.save();
+    context.strokeStyle = "#ffffff";
+    context.lineWidth = 2;
+    context.shadowColor = "rgba(0, 0, 0, 0.72)";
+    context.shadowBlur = 4;
+    context.beginPath();
+    context.arc(targetX, targetY, targetRadius, 0, Math.PI * 2);
+    context.stroke();
+    context.restore();
+  }
 
   const hitRadiusCrossing = 22;
   const hoveredTooltip = pointer
@@ -475,6 +498,7 @@ function useDeviceHeading({latitude, longitude, onHeading}: {latitude: number; l
     trueHeading: null,
     accuracy: null,
     declination,
+    pointingAltitude: null,
   });
   const activeRef = useRef(false);
   const declinationRef = useRef(declination);
@@ -494,6 +518,7 @@ function useDeviceHeading({latitude, longitude, onHeading}: {latitude: number; l
         beta: orientationEvent.beta,
         gamma: orientationEvent.gamma,
       };
+      const pointingAltitude = deviceSightlineAltitude(orientationRef.current);
 
       if (!isFiniteNumber(orientationEvent.webkitCompassHeading)) return;
 
@@ -510,6 +535,7 @@ function useDeviceHeading({latitude, longitude, onHeading}: {latitude: number; l
         trueHeading,
         accuracy,
         declination: declinationRef.current,
+        pointingAltitude,
       });
     },
     [],
@@ -544,6 +570,7 @@ function useDeviceHeading({latitude, longitude, onHeading}: {latitude: number; l
           status: "unsupported",
           message: "Device orientation is not available in this browser.",
           declination: declinationRef.current,
+          pointingAltitude: null,
         }));
         return;
       }
@@ -554,6 +581,7 @@ function useDeviceHeading({latitude, longitude, onHeading}: {latitude: number; l
           status: "error",
           message: "Compass requires HTTPS on iOS Safari. Use npm run dev:https on your local network.",
           declination: declinationRef.current,
+          pointingAltitude: null,
         }));
         return;
       }
@@ -564,6 +592,7 @@ function useDeviceHeading({latitude, longitude, onHeading}: {latitude: number; l
         status: "requesting",
         message: "Requesting compass permission...",
         declination: declinationRef.current,
+        pointingAltitude: null,
       }));
 
       try {
@@ -576,6 +605,7 @@ function useDeviceHeading({latitude, longitude, onHeading}: {latitude: number; l
               status: "denied",
               message: "Compass permission was denied.",
               declination: declinationRef.current,
+              pointingAltitude: null,
             }));
             return;
           }
@@ -590,6 +620,7 @@ function useDeviceHeading({latitude, longitude, onHeading}: {latitude: number; l
           status: "active",
           message: "Waiting for iPhone compass heading...",
           declination: declinationRef.current,
+          pointingAltitude: null,
         }));
       } catch (error) {
         activeRef.current = false;
@@ -598,6 +629,7 @@ function useDeviceHeading({latitude, longitude, onHeading}: {latitude: number; l
           status: "error",
           message: error instanceof Error ? error.message : "Unable to start the compass.",
           declination: declinationRef.current,
+          pointingAltitude: null,
         }));
       }
     },
@@ -632,6 +664,7 @@ function useDeviceHeading({latitude, longitude, onHeading}: {latitude: number; l
     start,
     stop,
     isActive: compassState.status === "active",
+    pointingAltitude: compassState.pointingAltitude,
   };
 }
 
@@ -772,6 +805,7 @@ function SkyPathChart({
   sunLabels,
   moonLabels,
   facingDegrees,
+  pointingAltitude,
   zoneId,
   localDayStartUtc,
 }: {
@@ -782,12 +816,14 @@ function SkyPathChart({
   sunLabels: HorizonEventLabel;
   moonLabels: HorizonEventLabel;
   facingDegrees: number;
+  pointingAltitude: number | null;
   zoneId: string;
   localDayStartUtc: Date;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const staticSceneRef = useRef<StaticSkyScene | null>(null);
   const facingDegreesRef = useRef(facingDegrees);
+  const pointingAltitudeRef = useRef(pointingAltitude);
   const pointerRef = useRef<ChartPointer | null>(null);
   const [pointer, setPointer] = useState<ChartPointer | null>(null);
   const [canvasSize, setCanvasSize] = useState({width: 0, height: 0});
@@ -812,14 +848,15 @@ function SkyPathChart({
 
   useEffect(() => {
     facingDegreesRef.current = facingDegrees;
+    pointingAltitudeRef.current = pointingAltitude;
     pointerRef.current = pointer;
 
     const canvas = canvasRef.current;
     const scene = staticSceneRef.current;
     if (!canvas || !scene) return;
 
-    drawSkyViewport(canvas, scene, facingDegrees, pointer);
-  }, [facingDegrees, pointer]);
+    drawSkyViewport(canvas, scene, facingDegrees, pointingAltitude, pointer);
+  }, [facingDegrees, pointingAltitude, pointer]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -1108,7 +1145,7 @@ function SkyPathChart({
 
     const scene = {canvas: sceneCanvas, crossings, diskHovers, width, height};
     staticSceneRef.current = scene;
-    drawSkyViewport(canvas, scene, facingDegreesRef.current, pointerRef.current);
+    drawSkyViewport(canvas, scene, facingDegreesRef.current, pointingAltitudeRef.current, pointerRef.current);
   }, [sunContextPath, moonContextPath, sunNow, moonNow, sunLabels, moonLabels, zoneId, localDayStartUtc, canvasSize]);
 
   return (
@@ -1253,6 +1290,7 @@ function App() {
     start: startCompass,
     stop: stopCompass,
     isActive: compassActive,
+    pointingAltitude,
   } = useDeviceHeading({
     latitude,
     longitude,
@@ -1409,6 +1447,7 @@ function App() {
               sunLabels={chartEventLabels.sun}
               moonLabels={chartEventLabels.moon}
               facingDegrees={facingDegrees}
+              pointingAltitude={compassActive ? pointingAltitude : null}
               zoneId={zoneId}
               localDayStartUtc={localDayStartUtc}
             />
