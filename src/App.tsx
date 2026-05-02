@@ -1,4 +1,4 @@
-import {useEffect, useMemo, useRef, useState} from "react";
+import {useEffect, useMemo, useRef, useState, type MutableRefObject} from "react";
 import {Canvas, useThree} from "@react-three/fiber";
 import {Line, OrbitControls, Stars, useTexture} from "@react-three/drei";
 import {Body, DEG2RAD, Equator, EquatorFromVector, GeoVector, Horizon, Illumination, MoonPhase, Observer, SearchMoonPhase, SearchRiseSet, SiderealTime} from "astronomy-engine";
@@ -63,6 +63,16 @@ type CompassState = {
   pointingAltitude: number | null;
 };
 
+type DeviceAimSnapshot = {
+  azimuth: number | null;
+  altitude: number | null;
+  magneticHeading: number | null;
+  trueHeading: number | null;
+  accuracy: number | null;
+  declination: number;
+  updatedAt: number | null;
+};
+
 type DeviceOrientationPermissionState = "granted" | "denied";
 
 type DeviceOrientationEventConstructorWithPermission = typeof DeviceOrientationEvent & {
@@ -124,6 +134,95 @@ const isFiniteNumber = (value: unknown): value is number => typeof value === "nu
 const interpolateWrappedDegrees = (start: number, end: number, fraction: number) => start + normalizeSignedDegrees(end - start) * fraction;
 
 const clampUnit = (value: number) => Math.max(-1, Math.min(1, value));
+const balancedAimSmoothingMs = 90;
+const maxAimFrameDeltaMs = 100;
+
+const createDeviceAimSnapshot = (declination = 0): DeviceAimSnapshot => ({
+  azimuth: null,
+  altitude: null,
+  magneticHeading: null,
+  trueHeading: null,
+  accuracy: null,
+  declination,
+  updatedAt: null,
+});
+
+const normalizeVector = (vector: Vec3): Vec3 => {
+  const length = Math.hypot(vector.x, vector.y, vector.z);
+  if (length <= 1e-9) return {x: 0, y: 1, z: 0};
+  return {x: vector.x / length, y: vector.y / length, z: vector.z / length};
+};
+
+const dotVector = (a: Vec3, b: Vec3) => a.x * b.x + a.y * b.y + a.z * b.z;
+
+const crossVector = (a: Vec3, b: Vec3): Vec3 => ({
+  x: a.y * b.z - a.z * b.y,
+  y: a.z * b.x - a.x * b.z,
+  z: a.x * b.y - a.y * b.x,
+});
+
+const azAltToVector = (azimuth: number, altitude: number): Vec3 => {
+  const azimuthRad = azimuth * DEG2RAD;
+  const altitudeRad = altitude * DEG2RAD;
+  const horizontal = Math.cos(altitudeRad);
+  return {
+    x: Math.sin(azimuthRad) * horizontal,
+    y: Math.cos(azimuthRad) * horizontal,
+    z: Math.sin(altitudeRad),
+  };
+};
+
+const vectorToAzAlt = (vector: Vec3) => {
+  const normalized = normalizeVector(vector);
+  return {
+    azimuth: normalizeDegrees(Math.atan2(normalized.x, normalized.y) / DEG2RAD),
+    altitude: Math.asin(clampUnit(normalized.z)) / DEG2RAD,
+  };
+};
+
+const smoothAimVector = (current: Vec3 | null, target: Vec3, elapsedMs: number, timeConstantMs = balancedAimSmoothingMs) => {
+  if (!current) return normalizeVector(target);
+
+  const clampedElapsed = Math.max(0, Math.min(maxAimFrameDeltaMs, elapsedMs));
+  const alpha = 1 - Math.exp(-clampedElapsed / timeConstantMs);
+  return normalizeVector({
+    x: current.x + (target.x - current.x) * alpha,
+    y: current.y + (target.y - current.y) * alpha,
+    z: current.z + (target.z - current.z) * alpha,
+  });
+};
+
+const projectVectorToViewport = (target: Vec3, camera: Vec3, width: number, height: number, horizontalFovDegrees = 42) => {
+  const forward = normalizeVector(camera);
+  const worldUp = {x: 0, y: 0, z: 1};
+  let right = crossVector(forward, worldUp);
+  if (Math.hypot(right.x, right.y, right.z) < 1e-6) {
+    const azAlt = vectorToAzAlt(forward);
+    right = azAltToVector(normalizeDegrees(azAlt.azimuth + 90), 0);
+  } else {
+    right = normalizeVector(right);
+  }
+  const screenUp = normalizeVector(crossVector(right, forward));
+  const normalizedTarget = normalizeVector(target);
+  const xComponent = dotVector(normalizedTarget, right);
+  const yComponent = dotVector(normalizedTarget, screenUp);
+  const zComponent = dotVector(normalizedTarget, forward);
+  const horizontalFov = horizontalFovDegrees * DEG2RAD;
+  const verticalFov = horizontalFov * (height / width);
+  const angleX = Math.atan2(xComponent, zComponent);
+  const angleY = Math.atan2(yComponent, zComponent);
+  const x = width / 2 + (angleX / horizontalFov) * width;
+  const y = height / 2 - (angleY / verticalFov) * height;
+
+  return {
+    x,
+    y,
+    angleX,
+    angleY,
+    inFront: zComponent > 0,
+    inView: zComponent > 0 && Math.abs(angleX) <= horizontalFov / 2 && Math.abs(angleY) <= verticalFov / 2,
+  };
+};
 
 const topEdgeHorizontalStrength = ({beta}: DeviceOrientationSnapshot) => {
   if (!isFiniteNumber(beta)) return null;
@@ -512,7 +611,7 @@ const compassMessage = (state: CompassState) => {
   return state.message;
 };
 
-function useDeviceHeading({latitude, longitude, onHeading}: {latitude: number; longitude: number; onHeading: (headingDegrees: number) => void}) {
+function useDeviceAim({latitude, longitude, onHeading}: {latitude: number; longitude: number; onHeading: (headingDegrees: number) => void}) {
   const declination = useMemo(() => {
     try {
       return magvar(latitude, longitude, 0);
@@ -520,6 +619,7 @@ function useDeviceHeading({latitude, longitude, onHeading}: {latitude: number; l
       return 0;
     }
   }, [latitude, longitude]);
+  const aimRef = useRef<DeviceAimSnapshot>(createDeviceAimSnapshot(declination));
   const [compassState, setCompassState] = useState<CompassState>({
     status: "idle",
     message: "Compass off",
@@ -532,14 +632,36 @@ function useDeviceHeading({latitude, longitude, onHeading}: {latitude: number; l
   });
   const activeRef = useRef(false);
   const declinationRef = useRef(declination);
-  const magneticHeadingRef = useRef<number | null>(null);
   const pointingAzimuthRef = useRef<number | null>(null);
+  const lastUiUpdateRef = useRef(0);
   const onHeadingRef = useRef(onHeading);
   const orientationRef = useRef<DeviceOrientationSnapshot>({alpha: null, beta: null, gamma: null});
 
   useEffect(() => {
     onHeadingRef.current = onHeading;
   }, [onHeading]);
+
+  const publishAimState = useMemo(
+    () => (status: CompassStatus, message: string, force = false) => {
+      const now = performance.now();
+      if (!force && now - lastUiUpdateRef.current < 150) return;
+      lastUiUpdateRef.current = now;
+
+      const aim = aimRef.current;
+      if (aim.azimuth !== null) onHeadingRef.current(aim.azimuth);
+      setCompassState({
+        status,
+        message,
+        magneticHeading: aim.magneticHeading,
+        trueHeading: aim.trueHeading,
+        accuracy: aim.accuracy,
+        declination: aim.declination,
+        pointingAzimuth: aim.azimuth,
+        pointingAltitude: aim.altitude,
+      });
+    },
+    [],
+  );
 
   const handleOrientation = useMemo(
     () => (event: Event) => {
@@ -564,21 +686,19 @@ function useDeviceHeading({latitude, longitude, onHeading}: {latitude: number; l
           : rawPointingAzimuth;
       const pointingAltitude = cameraAim?.altitude ?? null;
 
-      magneticHeadingRef.current = magneticHeading;
       pointingAzimuthRef.current = pointingAzimuth;
-      onHeadingRef.current(pointingAzimuth);
-      setCompassState({
-        status: "active",
-        message: "Using iPhone compass",
+      aimRef.current = {
+        azimuth: pointingAzimuth,
+        altitude: pointingAltitude,
         magneticHeading,
         trueHeading,
         accuracy,
         declination: declinationRef.current,
-        pointingAzimuth,
-        pointingAltitude,
-      });
+        updatedAt: performance.now(),
+      };
+      publishAimState("active", "Using iPhone compass");
     },
-    [],
+    [publishAimState],
   );
 
   const removeListeners = useMemo(
@@ -594,6 +714,12 @@ function useDeviceHeading({latitude, longitude, onHeading}: {latitude: number; l
       if (typeof window !== "undefined") removeListeners();
       activeRef.current = false;
       pointingAzimuthRef.current = null;
+      aimRef.current = {
+        ...aimRef.current,
+        azimuth: null,
+        altitude: null,
+        updatedAt: null,
+      };
       setCompassState((current) => ({
         ...current,
         status: "idle",
@@ -606,6 +732,7 @@ function useDeviceHeading({latitude, longitude, onHeading}: {latitude: number; l
   const start = useMemo(
     () => async () => {
       if (typeof window === "undefined" || !("DeviceOrientationEvent" in window)) {
+        aimRef.current = {...aimRef.current, declination: declinationRef.current};
         setCompassState((current) => ({
           ...current,
           status: "unsupported",
@@ -618,6 +745,7 @@ function useDeviceHeading({latitude, longitude, onHeading}: {latitude: number; l
       }
 
       if (!window.isSecureContext) {
+        aimRef.current = {...aimRef.current, declination: declinationRef.current};
         setCompassState((current) => ({
           ...current,
           status: "error",
@@ -630,6 +758,7 @@ function useDeviceHeading({latitude, longitude, onHeading}: {latitude: number; l
       }
 
       const DeviceOrientationWithPermission = window.DeviceOrientationEvent as DeviceOrientationEventConstructorWithPermission;
+      aimRef.current = {...aimRef.current, declination: declinationRef.current, azimuth: null, altitude: null, updatedAt: null};
       setCompassState((current) => ({
         ...current,
         status: "requesting",
@@ -644,6 +773,7 @@ function useDeviceHeading({latitude, longitude, onHeading}: {latitude: number; l
           const permission = await DeviceOrientationWithPermission.requestPermission(true);
           if (permission !== "granted") {
             activeRef.current = false;
+            aimRef.current = {...aimRef.current, azimuth: null, altitude: null, updatedAt: null};
             setCompassState((current) => ({
               ...current,
               status: "denied",
@@ -658,6 +788,7 @@ function useDeviceHeading({latitude, longitude, onHeading}: {latitude: number; l
 
         removeListeners();
         activeRef.current = true;
+        lastUiUpdateRef.current = 0;
         window.addEventListener("deviceorientation", handleOrientation);
         window.addEventListener("deviceorientationabsolute", handleOrientation);
         setCompassState((current) => ({
@@ -670,6 +801,7 @@ function useDeviceHeading({latitude, longitude, onHeading}: {latitude: number; l
         }));
       } catch (error) {
         activeRef.current = false;
+        aimRef.current = {...aimRef.current, azimuth: null, altitude: null, updatedAt: null};
         setCompassState((current) => ({
           ...current,
           status: "error",
@@ -685,9 +817,10 @@ function useDeviceHeading({latitude, longitude, onHeading}: {latitude: number; l
 
   useEffect(() => {
     declinationRef.current = declination;
+    aimRef.current = {...aimRef.current, declination};
     setCompassState((current) => ({...current, declination}));
 
-    const magneticHeading = magneticHeadingRef.current;
+    const magneticHeading = aimRef.current.magneticHeading;
     if (!activeRef.current || magneticHeading === null) return;
 
     const trueHeading = normalizeDegrees(magneticHeading + declination);
@@ -700,15 +833,17 @@ function useDeviceHeading({latitude, longitude, onHeading}: {latitude: number; l
         ? previousPointingAzimuth
         : rawPointingAzimuth;
     pointingAzimuthRef.current = pointingAzimuth;
-    onHeadingRef.current(pointingAzimuth);
-    setCompassState((current) => ({
-      ...current,
+
+    aimRef.current = {
+      ...aimRef.current,
+      azimuth: pointingAzimuth,
+      altitude: cameraAim?.altitude ?? aimRef.current.altitude,
       trueHeading,
-      pointingAzimuth,
-      pointingAltitude: cameraAim?.altitude ?? current.pointingAltitude,
       declination,
-    }));
-  }, [declination]);
+      updatedAt: performance.now(),
+    };
+    publishAimState("active", "Using iPhone compass", true);
+  }, [declination, publishAimState]);
 
   useEffect(() => {
     return () => {
@@ -722,8 +857,7 @@ function useDeviceHeading({latitude, longitude, onHeading}: {latitude: number; l
     start,
     stop,
     isActive: compassState.status === "active",
-    pointingAzimuth: compassState.pointingAzimuth,
-    pointingAltitude: compassState.pointingAltitude,
+    aimRef,
   };
 }
 
@@ -864,7 +998,8 @@ function SkyPathChart({
   sunLabels,
   moonLabels,
   facingDegrees,
-  pointingAltitude,
+  aimRef,
+  compassActive,
   zoneId,
   localDayStartUtc,
 }: {
@@ -875,15 +1010,17 @@ function SkyPathChart({
   sunLabels: HorizonEventLabel;
   moonLabels: HorizonEventLabel;
   facingDegrees: number;
-  pointingAltitude: number | null;
+  aimRef: MutableRefObject<DeviceAimSnapshot>;
+  compassActive: boolean;
   zoneId: string;
   localDayStartUtc: Date;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const staticSceneRef = useRef<StaticSkyScene | null>(null);
   const facingDegreesRef = useRef(facingDegrees);
-  const pointingAltitudeRef = useRef(pointingAltitude);
   const pointerRef = useRef<ChartPointer | null>(null);
+  const smoothedAimVectorRef = useRef<Vec3 | null>(null);
+  const lastFrameTimeRef = useRef<number | null>(null);
   const [pointer, setPointer] = useState<ChartPointer | null>(null);
   const [canvasSize, setCanvasSize] = useState({width: 0, height: 0});
 
@@ -907,15 +1044,42 @@ function SkyPathChart({
 
   useEffect(() => {
     facingDegreesRef.current = facingDegrees;
-    pointingAltitudeRef.current = pointingAltitude;
     pointerRef.current = pointer;
 
     const canvas = canvasRef.current;
     const scene = staticSceneRef.current;
-    if (!canvas || !scene) return;
+    if (!canvas || !scene || compassActive) return;
 
-    drawSkyViewport(canvas, scene, facingDegrees, pointingAltitude, pointer);
-  }, [facingDegrees, pointingAltitude, pointer]);
+    drawSkyViewport(canvas, scene, facingDegrees, null, pointer);
+  }, [facingDegrees, pointer, compassActive]);
+
+  useEffect(() => {
+    if (!compassActive) {
+      smoothedAimVectorRef.current = null;
+      lastFrameTimeRef.current = null;
+      return;
+    }
+
+    let animationFrame = 0;
+    const drawFrame = (time: number) => {
+      const canvas = canvasRef.current;
+      const scene = staticSceneRef.current;
+      const aim = aimRef.current;
+
+      if (canvas && scene && aim.azimuth !== null && aim.altitude !== null) {
+        const elapsed = lastFrameTimeRef.current === null ? 0 : time - lastFrameTimeRef.current;
+        lastFrameTimeRef.current = time;
+        smoothedAimVectorRef.current = smoothAimVector(smoothedAimVectorRef.current, azAltToVector(aim.azimuth, aim.altitude), elapsed);
+        const smoothedAim = vectorToAzAlt(smoothedAimVectorRef.current);
+        drawSkyViewport(canvas, scene, smoothedAim.azimuth, smoothedAim.altitude, pointerRef.current);
+      }
+
+      animationFrame = requestAnimationFrame(drawFrame);
+    };
+
+    animationFrame = requestAnimationFrame(drawFrame);
+    return () => cancelAnimationFrame(animationFrame);
+  }, [aimRef, compassActive]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -1204,8 +1368,9 @@ function SkyPathChart({
 
     const scene = {canvas: sceneCanvas, crossings, diskHovers, width, height};
     staticSceneRef.current = scene;
-    drawSkyViewport(canvas, scene, facingDegreesRef.current, pointingAltitudeRef.current, pointerRef.current);
-  }, [sunContextPath, moonContextPath, sunNow, moonNow, sunLabels, moonLabels, zoneId, localDayStartUtc, canvasSize]);
+    const activeAim = aimRef.current;
+    drawSkyViewport(canvas, scene, compassActive && activeAim.azimuth !== null ? activeAim.azimuth : facingDegreesRef.current, compassActive ? activeAim.altitude : null, pointerRef.current);
+  }, [sunContextPath, moonContextPath, sunNow, moonNow, sunLabels, moonLabels, zoneId, localDayStartUtc, canvasSize, aimRef, compassActive]);
 
   return (
     <canvas
@@ -1321,28 +1486,30 @@ function drawMoonPhaseDisc(context: CanvasRenderingContext2D, x: number, y: numb
 
 function LocatorView({
   moonNow,
-  facingDegrees,
-  pointingAltitude,
+  aimRef,
   phaseFraction,
   waxing,
   compassActive,
   compassStatus,
 }: {
   moonNow: SkyPoint;
-  facingDegrees: number;
-  pointingAltitude: number | null;
+  aimRef: MutableRefObject<DeviceAimSnapshot>;
   phaseFraction: number;
   waxing: boolean;
   compassActive: boolean;
   compassStatus: CompassStatus;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const smoothedAimVectorRef = useRef<Vec3 | null>(null);
+  const lastFrameTimeRef = useRef<number | null>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+    const moonVector = azAltToVector(moonNow.azimuth, moonNow.altitude);
+    let animationFrame = 0;
 
-    const draw = () => {
+    const draw = (time: number) => {
       const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
       const cssWidth = Math.max(1, Math.round(canvas.clientWidth));
       const cssHeight = Math.max(1, Math.round(canvas.clientHeight));
@@ -1360,46 +1527,57 @@ function LocatorView({
       context.fillStyle = "#000000";
       context.fillRect(0, 0, cssWidth, cssHeight);
 
-      if (!compassActive || pointingAltitude === null) {
+      const aim = aimRef.current;
+      if (!compassActive || aim.azimuth === null || aim.altitude === null) {
+        smoothedAimVectorRef.current = null;
+        lastFrameTimeRef.current = null;
         context.fillStyle = "rgba(255, 255, 255, 0.86)";
         context.font = "600 15px system-ui";
         context.textAlign = "center";
         context.textBaseline = "middle";
-        const message = compassStatus === "requesting" ? "Waiting for motion permission" : "Tap Locator again to start pointing";
+        const message = compassStatus === "requesting" ? "Waiting for motion permission" : compassStatus === "active" ? "Move the phone to acquire heading" : "Tap Locator again to start pointing";
         context.fillText(message, cssWidth / 2, cssHeight / 2);
+        animationFrame = requestAnimationFrame(draw);
         return;
       }
 
-      const horizontalFov = 42;
-      const verticalFov = horizontalFov * (cssHeight / cssWidth);
-      const azimuthDelta = normalizeSignedDegrees(moonNow.azimuth - facingDegrees);
-      const altitudeDelta = moonNow.altitude - pointingAltitude;
-      const x = cssWidth / 2 + (azimuthDelta / horizontalFov) * cssWidth;
-      const y = cssHeight / 2 - (altitudeDelta / verticalFov) * cssHeight;
+      const elapsed = lastFrameTimeRef.current === null ? 0 : time - lastFrameTimeRef.current;
+      lastFrameTimeRef.current = time;
+      smoothedAimVectorRef.current = smoothAimVector(smoothedAimVectorRef.current, azAltToVector(aim.azimuth, aim.altitude), elapsed);
+      const projection = projectVectorToViewport(moonVector, smoothedAimVectorRef.current, cssWidth, cssHeight);
       const moonDiameter = Math.min(26, Math.max(14, Math.min(cssWidth, cssHeight) * 0.045));
       const moonRadius = moonDiameter / 2;
-      const inView = x >= moonRadius && x <= cssWidth - moonRadius && y >= moonRadius && y <= cssHeight - moonRadius;
+      const inView = projection.inView && projection.x >= moonRadius && projection.x <= cssWidth - moonRadius && projection.y >= moonRadius && projection.y <= cssHeight - moonRadius;
 
       if (inView) {
         context.shadowColor = "rgba(230, 238, 255, 0.42)";
         context.shadowBlur = moonRadius * 1.2;
-        drawMoonPhaseDisc(context, x, y, moonRadius, phaseFraction, waxing);
+        drawMoonPhaseDisc(context, projection.x, projection.y, moonRadius, phaseFraction, waxing);
         context.shadowBlur = 0;
+        animationFrame = requestAnimationFrame(draw);
         return;
       }
 
       const centerX = cssWidth / 2;
       const centerY = cssHeight / 2;
-      const deltaX = x - centerX;
-      const deltaY = y - centerY;
+      let deltaX = projection.x - centerX;
+      let deltaY = projection.y - centerY;
+      const deltaLength = Math.hypot(deltaX, deltaY);
+      if (deltaLength < 1e-6) {
+        deltaX = 0;
+        deltaY = projection.inFront ? -1 : 1;
+      }
+      const directionLength = Math.hypot(deltaX, deltaY);
+      const directionX = deltaX / directionLength;
+      const directionY = deltaY / directionLength;
       const edgePadding = 34;
       const scale = Math.min(
-        deltaX === 0 ? Infinity : (deltaX > 0 ? cssWidth - edgePadding - centerX : edgePadding - centerX) / deltaX,
-        deltaY === 0 ? Infinity : (deltaY > 0 ? cssHeight - edgePadding - centerY : edgePadding - centerY) / deltaY,
+        directionX === 0 ? Infinity : (directionX > 0 ? cssWidth - edgePadding - centerX : edgePadding - centerX) / directionX,
+        directionY === 0 ? Infinity : (directionY > 0 ? cssHeight - edgePadding - centerY : edgePadding - centerY) / directionY,
       );
-      const arrowX = centerX + deltaX * scale;
-      const arrowY = centerY + deltaY * scale;
-      const angle = Math.atan2(deltaY, deltaX);
+      const arrowX = centerX + directionX * scale;
+      const arrowY = centerY + directionY * scale;
+      const angle = Math.atan2(directionY, directionX);
       const arrowLength = 30;
       const arrowWidth = 18;
 
@@ -1417,15 +1595,22 @@ function LocatorView({
       context.closePath();
       context.fill();
       context.restore();
+
+      animationFrame = requestAnimationFrame(draw);
     };
 
-    draw();
+    animationFrame = requestAnimationFrame(draw);
 
-    const resizeObserver = new ResizeObserver(draw);
+    const resizeObserver = new ResizeObserver(() => {
+      lastFrameTimeRef.current = null;
+    });
     resizeObserver.observe(canvas);
 
-    return () => resizeObserver.disconnect();
-  }, [moonNow.azimuth, moonNow.altitude, facingDegrees, pointingAltitude, phaseFraction, waxing, compassActive, compassStatus]);
+    return () => {
+      cancelAnimationFrame(animationFrame);
+      resizeObserver.disconnect();
+    };
+  }, [moonNow.azimuth, moonNow.altitude, aimRef, phaseFraction, waxing, compassActive, compassStatus]);
 
   return <canvas className="locator-canvas" ref={canvasRef} aria-label="Moon locator" />;
 }
@@ -1519,8 +1704,8 @@ function App() {
     start: startCompass,
     stop: stopCompass,
     isActive: compassActive,
-    pointingAltitude,
-  } = useDeviceHeading({
+    aimRef,
+  } = useDeviceAim({
     latitude,
     longitude,
     onHeading: setFacingDegrees,
@@ -1683,7 +1868,8 @@ function App() {
               sunLabels={chartEventLabels.sun}
               moonLabels={chartEventLabels.moon}
               facingDegrees={facingDegrees}
-              pointingAltitude={compassActive ? pointingAltitude : null}
+              aimRef={aimRef}
+              compassActive={compassActive}
               zoneId={zoneId}
               localDayStartUtc={localDayStartUtc}
             />
@@ -1876,8 +2062,7 @@ function App() {
         <main className="locator-stage">
           <LocatorView
             moonNow={currentSky.moonNow}
-            facingDegrees={facingDegrees}
-            pointingAltitude={compassActive ? pointingAltitude : null}
+            aimRef={aimRef}
             phaseFraction={localAlmanac.moonPhaseFraction}
             waxing={localAlmanac.moonPhaseDegrees < 180}
             compassActive={compassActive}
