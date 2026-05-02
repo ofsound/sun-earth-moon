@@ -12,7 +12,8 @@
   padding: 1rem 0;
 }
 
-.app-shell.orbit-mode {
+.app-shell.orbit-mode,
+.app-shell.locator-mode {
   width: 100%;
   min-height: 100vh;
   grid-template-rows: auto 1fr;
@@ -33,7 +34,8 @@ p {
   gap: 1rem;
 }
 
-.orbit-mode .app-header {
+.orbit-mode .app-header,
+.locator-mode .app-header {
   position: relative;
   z-index: 2;
   padding: 1rem;
@@ -254,6 +256,19 @@ p {
   background: radial-gradient(circle at 50% 50%, #15233f 0%, #060a13 42%, #010309 100%);
 }
 
+.locator-stage {
+  min-height: calc(100vh - 5.5rem);
+  background: #000000;
+}
+
+.locator-canvas {
+  display: block;
+  width: 100%;
+  height: calc(100vh - 5.5rem);
+  background: #000000;
+  touch-action: none;
+}
+
 @media (max-width: 700px) {
   .app-header {
     align-items: stretch;
@@ -273,8 +288,13 @@ p {
     height: 340px;
   }
 
-  .orbit-stage {
+  .orbit-stage,
+  .locator-stage {
     min-height: calc(100vh - 8rem);
+  }
+
+  .locator-canvas {
+    height: calc(100vh - 8rem);
   }
 }
 

@@ -18,6 +18,8 @@ import moonTexture from "./assets/planets/moon.jpg";
 import worldMapTexture from "./assets/world-map.jpg";
 import "./App.css";
 
+type MainView = "sky" | "locator" | "orbit";
+
 type SkyPoint = {
   azimuth: number;
   altitude: number;
@@ -1258,6 +1260,176 @@ function MoonPhaseVisual({phaseFraction, waxing}: {phaseFraction: number; waxing
   );
 }
 
+function drawMoonPhaseDisc(context: CanvasRenderingContext2D, x: number, y: number, radius: number, phaseFraction: number, waxing: boolean) {
+  const phase = Math.max(0, Math.min(1, phaseFraction));
+  const terminatorX = (waxing ? 1 : -1) * radius * (1 - 2 * phase);
+
+  context.save();
+  context.beginPath();
+  context.arc(x, y, radius, 0, Math.PI * 2);
+  context.clip();
+
+  const darkGradient = context.createRadialGradient(x - radius * 0.25, y - radius * 0.25, radius * 0.1, x, y, radius);
+  darkGradient.addColorStop(0, "#283044");
+  darkGradient.addColorStop(1, "#090c14");
+  context.fillStyle = darkGradient;
+  context.fillRect(x - radius, y - radius, radius * 2, radius * 2);
+
+  if (phase > 0.015) {
+    const litGradient = context.createRadialGradient(x - radius * 0.34, y - radius * 0.38, radius * 0.1, x, y, radius * 1.25);
+    litGradient.addColorStop(0, "#ffffff");
+    litGradient.addColorStop(0.48, "#dfe5ef");
+    litGradient.addColorStop(1, "#8993a6");
+
+    context.fillStyle = litGradient;
+    context.beginPath();
+    if (phase >= 0.985) {
+      context.arc(x, y, radius, 0, Math.PI * 2);
+    } else if (waxing) {
+      context.moveTo(x, y - radius);
+      context.arc(x, y, radius, -Math.PI / 2, Math.PI / 2, false);
+      context.quadraticCurveTo(x + terminatorX, y, x, y - radius);
+    } else {
+      context.moveTo(x, y - radius);
+      context.quadraticCurveTo(x + terminatorX, y, x, y + radius);
+      context.arc(x, y, radius, Math.PI / 2, -Math.PI / 2, false);
+    }
+    context.closePath();
+    context.fill();
+  }
+
+  const craterAlpha = Math.min(0.22, Math.max(0, (phase - 0.04) * 0.5));
+  context.fillStyle = `rgba(88, 96, 112, ${craterAlpha})`;
+  [
+    [-0.32, -0.28, 0.09],
+    [0.28, 0.22, 0.13],
+    [-0.06, 0.44, 0.07],
+  ].forEach(([dx, dy, r]) => {
+    context.beginPath();
+    context.arc(x + dx * radius, y + dy * radius, Math.max(1, r * radius), 0, Math.PI * 2);
+    context.fill();
+  });
+
+  context.restore();
+
+  context.strokeStyle = "rgba(238, 243, 255, 0.68)";
+  context.lineWidth = Math.max(0.75, radius * 0.08);
+  context.beginPath();
+  context.arc(x, y, radius, 0, Math.PI * 2);
+  context.stroke();
+}
+
+function LocatorView({
+  moonNow,
+  facingDegrees,
+  pointingAltitude,
+  phaseFraction,
+  waxing,
+  compassActive,
+  compassStatus,
+}: {
+  moonNow: SkyPoint;
+  facingDegrees: number;
+  pointingAltitude: number | null;
+  phaseFraction: number;
+  waxing: boolean;
+  compassActive: boolean;
+  compassStatus: CompassStatus;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const draw = () => {
+      const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+      const cssWidth = Math.max(1, Math.round(canvas.clientWidth));
+      const cssHeight = Math.max(1, Math.round(canvas.clientHeight));
+      const width = Math.max(1, Math.round(cssWidth * pixelRatio));
+      const height = Math.max(1, Math.round(cssHeight * pixelRatio));
+
+      if (canvas.width !== width) canvas.width = width;
+      if (canvas.height !== height) canvas.height = height;
+
+      const context = canvas.getContext("2d");
+      if (!context) return;
+
+      context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+      context.clearRect(0, 0, cssWidth, cssHeight);
+      context.fillStyle = "#000000";
+      context.fillRect(0, 0, cssWidth, cssHeight);
+
+      if (!compassActive || pointingAltitude === null) {
+        context.fillStyle = "rgba(255, 255, 255, 0.86)";
+        context.font = "600 15px system-ui";
+        context.textAlign = "center";
+        context.textBaseline = "middle";
+        const message = compassStatus === "requesting" ? "Waiting for motion permission" : "Tap Locator again to start pointing";
+        context.fillText(message, cssWidth / 2, cssHeight / 2);
+        return;
+      }
+
+      const horizontalFov = 42;
+      const verticalFov = horizontalFov * (cssHeight / cssWidth);
+      const azimuthDelta = normalizeSignedDegrees(moonNow.azimuth - facingDegrees);
+      const altitudeDelta = moonNow.altitude - pointingAltitude;
+      const x = cssWidth / 2 + (azimuthDelta / horizontalFov) * cssWidth;
+      const y = cssHeight / 2 - (altitudeDelta / verticalFov) * cssHeight;
+      const moonDiameter = Math.min(26, Math.max(14, Math.min(cssWidth, cssHeight) * 0.045));
+      const moonRadius = moonDiameter / 2;
+      const inView = x >= moonRadius && x <= cssWidth - moonRadius && y >= moonRadius && y <= cssHeight - moonRadius;
+
+      if (inView) {
+        context.shadowColor = "rgba(230, 238, 255, 0.42)";
+        context.shadowBlur = moonRadius * 1.2;
+        drawMoonPhaseDisc(context, x, y, moonRadius, phaseFraction, waxing);
+        context.shadowBlur = 0;
+        return;
+      }
+
+      const centerX = cssWidth / 2;
+      const centerY = cssHeight / 2;
+      const deltaX = x - centerX;
+      const deltaY = y - centerY;
+      const edgePadding = 34;
+      const scale = Math.min(
+        deltaX === 0 ? Infinity : (deltaX > 0 ? cssWidth - edgePadding - centerX : edgePadding - centerX) / deltaX,
+        deltaY === 0 ? Infinity : (deltaY > 0 ? cssHeight - edgePadding - centerY : edgePadding - centerY) / deltaY,
+      );
+      const arrowX = centerX + deltaX * scale;
+      const arrowY = centerY + deltaY * scale;
+      const angle = Math.atan2(deltaY, deltaX);
+      const arrowLength = 30;
+      const arrowWidth = 18;
+
+      context.save();
+      context.translate(arrowX, arrowY);
+      context.rotate(angle);
+      context.fillStyle = "rgba(255, 255, 255, 0.92)";
+      context.shadowColor = "rgba(255, 255, 255, 0.32)";
+      context.shadowBlur = 12;
+      context.beginPath();
+      context.moveTo(arrowLength / 2, 0);
+      context.lineTo(-arrowLength / 2, -arrowWidth / 2);
+      context.lineTo(-arrowLength * 0.18, 0);
+      context.lineTo(-arrowLength / 2, arrowWidth / 2);
+      context.closePath();
+      context.fill();
+      context.restore();
+    };
+
+    draw();
+
+    const resizeObserver = new ResizeObserver(draw);
+    resizeObserver.observe(canvas);
+
+    return () => resizeObserver.disconnect();
+  }, [moonNow.azimuth, moonNow.altitude, facingDegrees, pointingAltitude, phaseFraction, waxing, compassActive, compassStatus]);
+
+  return <canvas className="locator-canvas" ref={canvasRef} aria-label="Moon locator" />;
+}
+
 function DayNightTerminatorOverlay({subsolarPoint}: {subsolarPoint: SubsolarPoint}) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -1341,7 +1513,7 @@ function App() {
   const [latitude, setLatitude] = useState(35.687);
   const [longitude, setLongitude] = useState(-105.9378);
   const [facingDegrees, setFacingDegrees] = useState(180);
-  const [activeView, setActiveView] = useState<"sky" | "orbit">("sky");
+  const [activeView, setActiveView] = useState<MainView>("sky");
   const {
     compassState,
     start: startCompass,
@@ -1473,9 +1645,13 @@ function App() {
 
   const pinLeft = `${((longitude + 180) / 360) * 100}%`;
   const pinTop = `${((90 - latitude) / 180) * 100}%`;
+  const enterLocator = () => {
+    setActiveView("locator");
+    if (!compassActive && compassState.status !== "requesting") void startCompass();
+  };
 
   return (
-    <div className={`app-shell ${activeView === "orbit" ? "orbit-mode" : ""}`}>
+    <div className={`app-shell ${activeView === "orbit" ? "orbit-mode" : ""} ${activeView === "locator" ? "locator-mode" : ""}`}>
       <header className="app-header">
         <div className="flex min-w-0 flex-1 flex-row flex-wrap items-center gap-x-4 gap-y-1">
           <h1 className="shrink-0 text-xl">Sun • Earth • Moon</h1>
@@ -1486,6 +1662,9 @@ function App() {
         <nav className="view-toggle flex flex-wrap gap-1 p-1" aria-label="View mode">
           <Button type="button" className="min-w-[7.25rem] whitespace-nowrap" size="sm" variant={activeView === "sky" ? "default" : "outline"} onClick={() => setActiveView("sky")}>
             Sky paths
+          </Button>
+          <Button type="button" className="min-w-[7.25rem] whitespace-nowrap" size="sm" variant={activeView === "locator" ? "default" : "outline"} onClick={enterLocator}>
+            Locator
           </Button>
           <Button type="button" className="min-w-[7.25rem] whitespace-nowrap" size="sm" variant={activeView === "orbit" ? "default" : "outline"} onClick={() => setActiveView("orbit")}>
             3D Model
@@ -1693,6 +1872,18 @@ function App() {
             </section>
           </div>
         </>
+      ) : activeView === "locator" ? (
+        <main className="locator-stage">
+          <LocatorView
+            moonNow={currentSky.moonNow}
+            facingDegrees={facingDegrees}
+            pointingAltitude={compassActive ? pointingAltitude : null}
+            phaseFraction={localAlmanac.moonPhaseFraction}
+            waxing={localAlmanac.moonPhaseDegrees < 180}
+            compassActive={compassActive}
+            compassStatus={compassState.status}
+          />
+        </main>
       ) : (
         <main className="orbit-stage">
           <OrbitView earthOrientation={orbitalState.earthOrientation} moonPosition={orbitalState.moonPosition} moonOrbitPoints={orbitalState.moonOrbitPoints} sunDirection={orbitalState.sunDirection} />
