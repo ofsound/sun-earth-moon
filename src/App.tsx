@@ -57,6 +57,7 @@ type CompassState = {
   trueHeading: number | null;
   accuracy: number | null;
   declination: number;
+  pointingAzimuth: number | null;
   pointingAltitude: number | null;
 };
 
@@ -120,10 +121,29 @@ const isFiniteNumber = (value: unknown): value is number => typeof value === "nu
 
 const interpolateWrappedDegrees = (start: number, end: number, fraction: number) => start + normalizeSignedDegrees(end - start) * fraction;
 
-const deviceSightlineAltitude = ({beta}: DeviceOrientationSnapshot) => {
-  if (!isFiniteNumber(beta)) return null;
+const clampUnit = (value: number) => Math.max(-1, Math.min(1, value));
 
-  return Math.asin(Math.sin(beta * DEG2RAD)) / DEG2RAD;
+const deviceCameraAim = ({beta, gamma}: DeviceOrientationSnapshot, trueHeading: number) => {
+  if (!isFiniteNumber(beta) || !isFiniteNumber(gamma)) return null;
+
+  const alpha = normalizeDegrees(360 - trueHeading) * DEG2RAD;
+  const betaRad = beta * DEG2RAD;
+  const gammaRad = gamma * DEG2RAD;
+  const cosAlpha = Math.cos(alpha);
+  const sinAlpha = Math.sin(alpha);
+  const cosBeta = Math.cos(betaRad);
+  const sinBeta = Math.sin(betaRad);
+  const cosGamma = Math.cos(gammaRad);
+  const sinGamma = Math.sin(gammaRad);
+
+  const east = -cosAlpha * sinGamma - sinAlpha * sinBeta * cosGamma;
+  const north = -sinAlpha * sinGamma + cosAlpha * sinBeta * cosGamma;
+  const up = -cosBeta * cosGamma;
+
+  return {
+    azimuth: normalizeDegrees(Math.atan2(east, north) / DEG2RAD),
+    altitude: Math.asin(clampUnit(up)) / DEG2RAD,
+  };
 };
 
 const observingTimeZone = (lat: number, lon: number) => {
@@ -476,8 +496,9 @@ const toCompassDirection = (degrees: number) => {
 const compassMessage = (state: CompassState) => {
   if (state.status === "active" && state.trueHeading !== null) {
     const accuracyNote = state.accuracy !== null && state.accuracy > 20 ? ` • low accuracy ±${Math.round(state.accuracy)}°` : state.accuracy !== null ? ` • accuracy ±${Math.round(state.accuracy)}°` : "";
+    const aimNote = state.pointingAzimuth !== null && state.pointingAltitude !== null ? ` • camera aim ${Math.round(state.pointingAzimuth)}°/${Math.round(state.pointingAltitude)}°` : "";
     const declinationPrefix = state.declination >= 0 ? "+" : "";
-    return `Using iPhone compass at selected pin • declination ${declinationPrefix}${state.declination.toFixed(1)}°${accuracyNote}`;
+    return `Using iPhone camera axis at selected pin • declination ${declinationPrefix}${state.declination.toFixed(1)}°${accuracyNote}${aimNote}`;
   }
 
   return state.message;
@@ -498,6 +519,7 @@ function useDeviceHeading({latitude, longitude, onHeading}: {latitude: number; l
     trueHeading: null,
     accuracy: null,
     declination,
+    pointingAzimuth: null,
     pointingAltitude: null,
   });
   const activeRef = useRef(false);
@@ -518,16 +540,17 @@ function useDeviceHeading({latitude, longitude, onHeading}: {latitude: number; l
         beta: orientationEvent.beta,
         gamma: orientationEvent.gamma,
       };
-      const pointingAltitude = deviceSightlineAltitude(orientationRef.current);
-
       if (!isFiniteNumber(orientationEvent.webkitCompassHeading)) return;
 
       const magneticHeading = normalizeDegrees(orientationEvent.webkitCompassHeading);
       const accuracy = isFiniteNumber(orientationEvent.webkitCompassAccuracy) ? orientationEvent.webkitCompassAccuracy : null;
       const trueHeading = normalizeDegrees(magneticHeading + declinationRef.current);
+      const cameraAim = deviceCameraAim(orientationRef.current, trueHeading);
+      const pointingAzimuth = cameraAim?.azimuth ?? trueHeading;
+      const pointingAltitude = cameraAim?.altitude ?? null;
 
       magneticHeadingRef.current = magneticHeading;
-      onHeadingRef.current(trueHeading);
+      onHeadingRef.current(pointingAzimuth);
       setCompassState({
         status: "active",
         message: "Using iPhone compass",
@@ -535,6 +558,7 @@ function useDeviceHeading({latitude, longitude, onHeading}: {latitude: number; l
         trueHeading,
         accuracy,
         declination: declinationRef.current,
+        pointingAzimuth,
         pointingAltitude,
       });
     },
@@ -570,6 +594,7 @@ function useDeviceHeading({latitude, longitude, onHeading}: {latitude: number; l
           status: "unsupported",
           message: "Device orientation is not available in this browser.",
           declination: declinationRef.current,
+          pointingAzimuth: null,
           pointingAltitude: null,
         }));
         return;
@@ -581,6 +606,7 @@ function useDeviceHeading({latitude, longitude, onHeading}: {latitude: number; l
           status: "error",
           message: "Compass requires HTTPS on iOS Safari. Use npm run dev:https on your local network.",
           declination: declinationRef.current,
+          pointingAzimuth: null,
           pointingAltitude: null,
         }));
         return;
@@ -592,6 +618,7 @@ function useDeviceHeading({latitude, longitude, onHeading}: {latitude: number; l
         status: "requesting",
         message: "Requesting compass permission...",
         declination: declinationRef.current,
+        pointingAzimuth: null,
         pointingAltitude: null,
       }));
 
@@ -605,6 +632,7 @@ function useDeviceHeading({latitude, longitude, onHeading}: {latitude: number; l
               status: "denied",
               message: "Compass permission was denied.",
               declination: declinationRef.current,
+              pointingAzimuth: null,
               pointingAltitude: null,
             }));
             return;
@@ -620,6 +648,7 @@ function useDeviceHeading({latitude, longitude, onHeading}: {latitude: number; l
           status: "active",
           message: "Waiting for iPhone compass heading...",
           declination: declinationRef.current,
+          pointingAzimuth: null,
           pointingAltitude: null,
         }));
       } catch (error) {
@@ -629,6 +658,7 @@ function useDeviceHeading({latitude, longitude, onHeading}: {latitude: number; l
           status: "error",
           message: error instanceof Error ? error.message : "Unable to start the compass.",
           declination: declinationRef.current,
+          pointingAzimuth: null,
           pointingAltitude: null,
         }));
       }
@@ -644,10 +674,14 @@ function useDeviceHeading({latitude, longitude, onHeading}: {latitude: number; l
     if (!activeRef.current || magneticHeading === null) return;
 
     const trueHeading = normalizeDegrees(magneticHeading + declination);
-    onHeadingRef.current(trueHeading);
+    const cameraAim = deviceCameraAim(orientationRef.current, trueHeading);
+    const pointingAzimuth = cameraAim?.azimuth ?? trueHeading;
+    onHeadingRef.current(pointingAzimuth);
     setCompassState((current) => ({
       ...current,
       trueHeading,
+      pointingAzimuth,
+      pointingAltitude: cameraAim?.altitude ?? current.pointingAltitude,
       declination,
     }));
   }, [declination]);
@@ -664,6 +698,7 @@ function useDeviceHeading({latitude, longitude, onHeading}: {latitude: number; l
     start,
     stop,
     isActive: compassState.status === "active",
+    pointingAzimuth: compassState.pointingAzimuth,
     pointingAltitude: compassState.pointingAltitude,
   };
 }
