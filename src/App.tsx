@@ -123,6 +123,12 @@ const interpolateWrappedDegrees = (start: number, end: number, fraction: number)
 
 const clampUnit = (value: number) => Math.max(-1, Math.min(1, value));
 
+const topEdgeHorizontalStrength = ({beta}: DeviceOrientationSnapshot) => {
+  if (!isFiniteNumber(beta)) return null;
+
+  return Math.abs(Math.cos(beta * DEG2RAD));
+};
+
 const deviceCameraAim = ({beta, gamma}: DeviceOrientationSnapshot, trueHeading: number) => {
   if (!isFiniteNumber(beta) || !isFiniteNumber(gamma)) return null;
 
@@ -525,6 +531,7 @@ function useDeviceHeading({latitude, longitude, onHeading}: {latitude: number; l
   const activeRef = useRef(false);
   const declinationRef = useRef(declination);
   const magneticHeadingRef = useRef<number | null>(null);
+  const pointingAzimuthRef = useRef<number | null>(null);
   const onHeadingRef = useRef(onHeading);
   const orientationRef = useRef<DeviceOrientationSnapshot>({alpha: null, beta: null, gamma: null});
 
@@ -546,10 +553,17 @@ function useDeviceHeading({latitude, longitude, onHeading}: {latitude: number; l
       const accuracy = isFiniteNumber(orientationEvent.webkitCompassAccuracy) ? orientationEvent.webkitCompassAccuracy : null;
       const trueHeading = normalizeDegrees(magneticHeading + declinationRef.current);
       const cameraAim = deviceCameraAim(orientationRef.current, trueHeading);
-      const pointingAzimuth = cameraAim?.azimuth ?? trueHeading;
+      const rawPointingAzimuth = cameraAim?.azimuth ?? trueHeading;
+      const previousPointingAzimuth = pointingAzimuthRef.current;
+      const headingStrength = topEdgeHorizontalStrength(orientationRef.current);
+      const pointingAzimuth =
+        previousPointingAzimuth !== null && headingStrength !== null && headingStrength < 0.28 && Math.abs(normalizeSignedDegrees(rawPointingAzimuth - previousPointingAzimuth)) > 18
+          ? previousPointingAzimuth
+          : rawPointingAzimuth;
       const pointingAltitude = cameraAim?.altitude ?? null;
 
       magneticHeadingRef.current = magneticHeading;
+      pointingAzimuthRef.current = pointingAzimuth;
       onHeadingRef.current(pointingAzimuth);
       setCompassState({
         status: "active",
@@ -577,6 +591,7 @@ function useDeviceHeading({latitude, longitude, onHeading}: {latitude: number; l
     () => () => {
       if (typeof window !== "undefined") removeListeners();
       activeRef.current = false;
+      pointingAzimuthRef.current = null;
       setCompassState((current) => ({
         ...current,
         status: "idle",
@@ -675,7 +690,14 @@ function useDeviceHeading({latitude, longitude, onHeading}: {latitude: number; l
 
     const trueHeading = normalizeDegrees(magneticHeading + declination);
     const cameraAim = deviceCameraAim(orientationRef.current, trueHeading);
-    const pointingAzimuth = cameraAim?.azimuth ?? trueHeading;
+    const rawPointingAzimuth = cameraAim?.azimuth ?? trueHeading;
+    const previousPointingAzimuth = pointingAzimuthRef.current;
+    const headingStrength = topEdgeHorizontalStrength(orientationRef.current);
+    const pointingAzimuth =
+      previousPointingAzimuth !== null && headingStrength !== null && headingStrength < 0.28 && Math.abs(normalizeSignedDegrees(rawPointingAzimuth - previousPointingAzimuth)) > 18
+        ? previousPointingAzimuth
+        : rawPointingAzimuth;
+    pointingAzimuthRef.current = pointingAzimuth;
     onHeadingRef.current(pointingAzimuth);
     setCompassState((current) => ({
       ...current,
